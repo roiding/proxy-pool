@@ -778,3 +778,26 @@ func TestBuiltInJudgeSignedHTTP(t *testing.T) {
 		t.Fatalf("wrong-secret acquire error = %v, want INSUFFICIENT_VALIDATED_RESOURCES", derr)
 	}
 }
+
+func TestAuthRequiredProxyClassifiedAsAuth(t *testing.T) {
+	j := startJudge(t)
+	// A proxy that always answers CONNECT with 407 (expired credentials).
+	authProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Proxy Authentication Required", http.StatusProxyAuthRequired)
+	}))
+	defer authProxy.Close()
+	e := newEnv(t, j, nil)
+	e.importProxy(t, "manual", fmt.Sprintf("http://user:pass@127.0.0.1:%d", portOf(authProxy.URL)))
+
+	_, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
+	if derr == nil || derr.Code != "INSUFFICIENT_VALIDATED_RESOURCES" {
+		t.Fatalf("acquire error = %v, want INSUFFICIENT_VALIDATED_RESOURCES", derr)
+	}
+	stats, err := e.store.Stats(context.Background())
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if stats.HealthFail != 1 {
+		t.Fatalf("407 must be attributed to the proxy credential: %+v", stats)
+	}
+}

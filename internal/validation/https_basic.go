@@ -146,6 +146,10 @@ func ProbeHTTPSBasic(ctx context.Context, conn domain.Connection, judgeURL strin
 		switch {
 		case strings.Contains(msg, "proxyconnect"):
 			return fail(FailProxy, "proxy connection failed: %v", err)
+		case strings.Contains(strings.ToLower(msg), "proxy authentication required"):
+			// The proxy answered the CONNECT with 407 even though the
+			// configured credentials were sent: wrong/expired credentials.
+			return fail(FailAuth, "proxy rejected credentials (407): %v", err)
 		case isTLSVerifyError(err):
 			return fail(FailProxy, "TLS verification through proxy failed: %v", err)
 		default:
