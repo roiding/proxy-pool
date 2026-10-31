@@ -99,3 +99,30 @@ func TestJudgeForwardedFor(t *testing.T) {
 		t.Fatalf("exit_ip=%q, want rightmost trusted entry 10.0.0.9", body.ExitIP)
 	}
 }
+
+func TestJudgeCloudflareConnectingIP(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.Handle("GET /v1/judge", NewJudgeHandler("", true))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/judge?nonce=0123456789abcdef0123456789abcdef", nil)
+	// A proxied client may spoof CF-Connecting-IP and XFF's leading entry; the
+	// deployment's trusted chain (Cloudflare, then Traefik) rebuilds them.
+	req.Header.Set("CF-Connecting-IP", "203.0.113.9")
+	req.Header.Set("X-Forwarded-For", "6.6.6.6, 104.21.0.1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		ExitIP string `json:"exit_ip"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.ExitIP != "203.0.113.9" {
+		t.Fatalf("exit_ip=%q, want CF-Connecting-IP 203.0.113.9", body.ExitIP)
+	}
+}

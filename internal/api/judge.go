@@ -21,15 +21,24 @@ const (
 var judgeNoncePattern = regexp.MustCompile(`^[0-9a-f]{16,64}$`)
 
 // NewJudgeHandler serves the owned judge endpoint. exit_ip comes from the
-// actual TCP peer (r.RemoteAddr); trustForwarded switches it to the rightmost
-// X-Forwarded-For entry for deployments where the judge is only reachable
-// through a trusted gateway (for example Traefik) — a spoofed leading header
-// from the proxied client is then ignored by construction.
+// actual TCP peer (r.RemoteAddr); trustForwarded switches it to trusted
+// forwarded sources for deployments where the judge is only reachable through
+// a trusted chain (for example Traefik behind Cloudflare): CF-Connecting-IP is
+// preferred (Cloudflare overwrites it, so a proxied client cannot spoof it),
+// then the rightmost X-Forwarded-For entry (the one the trusted gateway
+// appended), ignoring anything spoofed ahead of it.
 func NewJudgeHandler(secret string, trustForwarded bool) http.Handler {
 	limiter := newRateLimiter(judgeRatePerMinute, judgeRateBurst)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := ""
 		if trustForwarded {
+			if cfip := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cfip != "" {
+				if addr, err := netip.ParseAddr(cfip); err == nil && addr.IsValid() {
+					ip = cfip
+				}
+			}
+		}
+		if ip == "" && trustForwarded {
 			if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 				parts := strings.Split(xff, ",")
 				cand := strings.TrimSpace(parts[len(parts)-1])
