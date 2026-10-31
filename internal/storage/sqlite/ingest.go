@@ -1,0 +1,507 @@
+package sqlite
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"proxypool/internal/domain"
+)
+
+type ImportCounts struct {
+	Added   int `json:"added"`
+	Updated int `json:"updated"`
+	Skipped int `json:"skipped"`
+	Revoked int `json:"revoked"`
+}
+
+// ImportSnapshot imports candidates and, because a self-uploaded list is an
+// authoritative full snapshot, revokes this source's enabled offers that are
+// absent from the uploaded generation. Health state and tombstones survive.
+func (s *Store) ImportSnapshot(ctx context.Context, sourceID, generation string, candidates []domain.NormalizedCandidate, now time.Time) (ImportCounts, error) {
+	var counts ImportCounts
+	err := s.tx(ctx, func(t *sql.Tx) error {
+		counts = ImportCounts{}
+		for _, c := range candidates {
+			if c.ResourceID == "" || c.OfferID == "" {
+				counts.Skipped++
+				continue
+			}
+			if c.CredentialVersion != "" {
+				if _, err := t.ExecContext(ctx, `
+					INSERT INTO proxy_credentials(credential_version, username, password, created_at)
+					VALUES(?,?,?,?)
+					ON CONFLICT(credential_version) DO NOTHING`,
+					c.CredentialVersion, c.Conn.Username, c.Conn.Password, fmtTime(now)); err != nil {
+					return err
+				}
+			}
+			if _, err := t.ExecContext(ctx, `
+				INSERT INTO proxy_resources(resource_id, tenant, transport, host, port, credential_version, session_policy, resource_kind, disabled, created_at, updated_at)
+				VALUES(?,?,?,?,?,?,?,?,0,?,?)
+				ON CONFLICT(resource_id) DO UPDATE SET updated_at = excluded.updated_at`,
+				c.ResourceID, "default", string(c.Conn.Transport), c.Conn.Host, c.Conn.Port,
+				c.CredentialVersion, string(c.Session), string(c.Kind), fmtTime(now), fmtTime(now)); err != nil {
+				return err
+			}
+			var tombstoned int
+			if err := t.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM eviction_tombstones
+				WHERE resource_id = ? AND source_id = ? AND source_record_id = ?
+				  AND source_generation = ? AND reason = 'EVICTED'`,
+				c.ResourceID, c.SourceID, c.RecordID, c.Generation).Scan(&tombstoned); err != nil {
+				return err
+			}
+			if tombstoned > 0 {
+				counts.Skipped++
+				continue
+			}
+			var exists int
+			if err := t.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM source_offers
+				WHERE source_id = ? AND source_record_id = ? AND source_generation = ?`,
+				c.SourceID, c.RecordID, c.Generation).Scan(&exists); err != nil {
+				return err
+			}
+			claimsJSON, err := json.Marshal(c.Claims)
+			if err != nil {
+				return fmt.Errorf("encode claims: %w", err)
+			}
+			if _, err := t.ExecContext(ctx, `
+				INSERT INTO source_offers(offer_id, source_id, resource_id, source_record_id, source_generation,
+				  provider_expires_at, local_retention_deadline, expiry_basis, claims_json, max_pool_leases,
+				  capacity_group, state, created_at, updated_at)
+				VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+				ON CONFLICT(source_id, source_record_id, source_generation) DO UPDATE SET
+				  provider_expires_at = excluded.provider_expires_at,
+				  local_retention_deadline = excluded.local_retention_deadline,
+				  expiry_basis = excluded.expiry_basis,
+				  claims_json = excluded.claims_json,
+				  max_pool_leases = excluded.max_pool_leases,
+				  updated_at = excluded.updated_at`,
+				c.OfferID, c.SourceID, c.ResourceID, c.RecordID, c.Generation,
+				nullTime(c.ProviderExpiresAt), nullTime(c.LocalRetentionDeadline), c.ExpiryBasis,
+				string(claimsJSON), c.MaxPoolLeases, c.CapacityGroup, domain.OfferEnabled,
+				fmtTime(now), fmtTime(now)); err != nil {
+				return err
+			}
+			if exists > 0 {
+				counts.Updated++
+			} else {
+				counts.Added++
+			}
+		}
+		res, err := t.ExecContext(ctx, `
+			UPDATE source_offers SET state = 'REVOKED', updated_at = ?
+			WHERE source_id = ? AND state = 'ENABLED' AND source_generation != ?`,
+			fmtTime(now), sourceID, generation)
+		if err != nil {
+			return err
+		}
+		revoked, _ := res.RowsAffected()
+		counts.Revoked = int(revoked)
+		return nil
+	})
+	return counts, err
+}
+
+type PeriodicFilters struct {
+	Profile      string
+	Now          time.Time
+	Limit        int
+	SourceID     string
+	ExcludeByIDs []string
+}
+
+// SelectPeriodicCandidates returns the least-recently validated candidates of
+// self-uploaded (custom) sources for bounded background revalidation. This
+// only refreshes health/ranking evidence and never authorizes delivery.
+func (s *Store) SelectPeriodicCandidates(ctx context.Context, f PeriodicFilters) ([]domain.Candidate, error) {
+	if f.Limit <= 0 {
+		f.Limit = 60
+	}
+	query := `
+		SELECT o.offer_id, o.source_id, o.resource_id, o.source_record_id, o.source_generation,
+		       o.provider_expires_at, o.local_retention_deadline, o.expiry_basis, o.claims_json,
+		       o.max_pool_leases, o.capacity_group, o.state,
+		       r.transport, r.host, r.port, r.credential_version, r.session_policy, r.resource_kind,
+		       COALESCE(cr.username, ''), COALESCE(cr.password, ''),
+		       COALESCE(h.last_outcome, 'UNKNOWN'), h.last_pass_at, COALESCE(h.consecutive_failures, 0)
+		FROM source_offers o
+		JOIN proxy_resources r ON r.resource_id = o.resource_id AND r.disabled = 0
+		JOIN sources src ON src.source_id = o.source_id AND src.enabled = 1 AND src.adapter_type = 'custom'
+		LEFT JOIN proxy_credentials cr ON cr.credential_version = r.credential_version
+		LEFT JOIN scoped_health h
+		  ON h.resource_id = r.resource_id
+		 AND h.context_key = r.credential_version || '|' || r.session_policy
+		 AND h.profile = ?
+		WHERE o.state = 'ENABLED'
+		  AND (o.provider_expires_at IS NULL OR o.provider_expires_at > ?)
+		  AND (o.local_retention_deadline IS NULL OR o.local_retention_deadline > ?)
+		  AND (h.cooldown_until IS NULL OR h.cooldown_until <= ?)
+		  AND NOT EXISTS (
+		        SELECT 1 FROM leases l
+		        WHERE l.resource_id = r.resource_id AND l.state = 'ACTIVE')`
+	args := []any{f.Profile, fmtTime(f.Now), fmtTime(f.Now), fmtTime(f.Now)}
+	if f.SourceID != "" {
+		query += " AND o.source_id = ?"
+		args = append(args, f.SourceID)
+	}
+	if len(f.ExcludeByIDs) > 0 {
+		query += " AND r.resource_id NOT IN (" + placeholders(len(f.ExcludeByIDs)) + ")"
+		for _, v := range f.ExcludeByIDs {
+			args = append(args, v)
+		}
+	}
+	query += `
+		ORDER BY (h.last_pass_at IS NULL) DESC, h.last_pass_at ASC, random()
+		LIMIT ?`
+	args = append(args, f.Limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []domain.Candidate
+	for rows.Next() {
+		var c domain.Candidate
+		var providerExp, retention, lastPass any
+		var claimsJSON string
+		var port int
+		if err := rows.Scan(
+			&c.Offer.ID, &c.Offer.SourceID, &c.Offer.ResourceID, &c.Offer.SourceRecordID,
+			&c.Offer.SourceGeneration, &providerExp, &retention, &c.Offer.ExpiryBasis,
+			&claimsJSON, &c.Offer.MaxPoolLeases, &c.Offer.CapacityGroup, &c.Offer.State,
+			&c.Resource.Conn.Transport, &c.Resource.Conn.Host, &port,
+			&c.Resource.CredentialVersion, &c.Resource.Session, &c.Resource.Kind,
+			&c.Resource.Conn.Username, &c.Resource.Conn.Password,
+			&c.LastOutcome, &lastPass, &c.ConsecutiveFailures,
+		); err != nil {
+			return nil, mapErr(err)
+		}
+		c.Resource.Conn.Port = port
+		c.Resource.ID = c.Offer.ResourceID
+		if c.Offer.ProviderExpiresAt, err = scanTime(providerExp); err != nil {
+			return nil, err
+		}
+		if c.Offer.LocalRetentionDeadline, err = scanTime(retention); err != nil {
+			return nil, err
+		}
+		if c.LastPassAt, err = scanTime(lastPass); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(claimsJSON), &c.Offer.Claims); err != nil {
+			return nil, fmt.Errorf("decode claims: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, mapErr(rows.Err())
+}
+
+// RetireResource revokes every enabled offer of a dead resource and plants a
+// tombstone so re-uploading the same list does not revive it.
+func (s *Store) RetireResource(ctx context.Context, resourceID, reason string, now time.Time) (int, error) {
+	revoked := 0
+	err := s.tx(ctx, func(t *sql.Tx) error {
+		rows, err := t.QueryContext(ctx, `
+			SELECT offer_id, source_id, source_record_id, source_generation
+			FROM source_offers WHERE resource_id = ? AND state = 'ENABLED'`, resourceID)
+		if err != nil {
+			return err
+		}
+		type offerKey struct{ offerID, sourceID, recordID, generation string }
+		var offers []offerKey
+		for rows.Next() {
+			var k offerKey
+			if err := rows.Scan(&k.offerID, &k.sourceID, &k.recordID, &k.generation); err != nil {
+				rows.Close()
+				return err
+			}
+			offers = append(offers, k)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, k := range offers {
+			if _, err := t.ExecContext(ctx, `
+				UPDATE source_offers SET state = 'REVOKED', updated_at = ? WHERE offer_id = ?`,
+				fmtTime(now), k.offerID); err != nil {
+				return err
+			}
+			if _, err := t.ExecContext(ctx, `
+				INSERT INTO eviction_tombstones(tombstone_id, resource_id, source_id, source_record_id,
+				  source_generation, reason, created_at)
+				VALUES(?,?,?,?,?,?,?)
+				ON CONFLICT(resource_id, source_id, source_record_id, source_generation, reason) DO NOTHING`,
+				domain.NewID("tmb_"), resourceID, k.sourceID, k.recordID, k.generation,
+				reason, fmtTime(now)); err != nil {
+				return err
+			}
+			revoked++
+		}
+		return nil
+	})
+	return revoked, err
+}
+
+type DailyStat struct {
+	SourceID string  `json:"source_id"`
+	Proxies  int64   `json:"proxies"`
+	Pass     int64   `json:"pass"`
+	Fail     int64   `json:"fail"`
+	PassRate float64 `json:"pass_rate"`
+}
+
+// RetireCandidates lists custom-source resources whose scoped consecutive
+// failure count reached the threshold.
+func (s *Store) RetireCandidates(ctx context.Context, threshold int, sourceID string) ([]string, error) {
+	query := `
+		SELECT DISTINCT so.resource_id
+		FROM scoped_health h
+		JOIN source_offers so ON so.resource_id = h.resource_id AND so.state = 'ENABLED'
+		JOIN sources src ON src.source_id = so.source_id AND src.adapter_type = 'custom'
+		WHERE h.consecutive_failures >= ?`
+	args := []any{threshold}
+	if sourceID != "" {
+		query += " AND so.source_id = ?"
+		args = append(args, sourceID)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, mapErr(err)
+		}
+		out = append(out, id)
+	}
+	return out, mapErr(rows.Err())
+}
+
+func (s *Store) DailySourceStats(ctx context.Context, from, to time.Time) ([]DailyStat, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		WITH latest AS (
+		  SELECT resource_id, outcome FROM (
+		    SELECT va.resource_id, va.outcome,
+		           ROW_NUMBER() OVER (PARTITION BY va.resource_id ORDER BY va.completed_at DESC) AS rn
+		    FROM validation_attempts va
+		    WHERE va.completed_at >= ? AND va.completed_at < ?
+		  ) WHERE rn = 1
+		),
+		pairs AS (
+		  SELECT DISTINCT o.source_id, l.resource_id, l.outcome
+		  FROM latest l
+		  JOIN source_offers o ON o.resource_id = l.resource_id
+		)
+		SELECT source_id, COUNT(*), SUM(outcome = 'PASS'), SUM(outcome = 'FAIL')
+		FROM pairs
+		GROUP BY source_id
+		ORDER BY source_id`, fmtTime(from), fmtTime(to))
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []DailyStat
+	for rows.Next() {
+		var d DailyStat
+		if err := rows.Scan(&d.SourceID, &d.Proxies, &d.Pass, &d.Fail); err != nil {
+			return nil, mapErr(err)
+		}
+		if d.Proxies > 0 {
+			d.PassRate = float64(d.Pass) / float64(d.Proxies)
+		}
+		out = append(out, d)
+	}
+	return out, mapErr(rows.Err())
+}
+
+type SourceOverview struct {
+	SourceID      string  `json:"source_id"`
+	ParserType    string  `json:"parser_type"`
+	Enabled       bool    `json:"enabled"`
+	Offers        int64   `json:"offers"`
+	EnabledOffers int64   `json:"enabled_offers"`
+	HealthPass    int64   `json:"health_pass"`
+	HealthFail    int64   `json:"health_fail"`
+	LastValidated *string `json:"last_validated_at"`
+}
+
+func (s *Store) SourcesOverview(ctx context.Context) ([]SourceOverview, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT s.source_id, s.parser_type, s.enabled,
+		       COALESCE(o.offers, 0), COALESCE(o.enabled_offers, 0),
+		       COALESCE(h.health_pass, 0), COALESCE(h.health_fail, 0),
+		       va.last_validated
+		FROM sources s
+		LEFT JOIN (
+		  SELECT source_id, COUNT(*) AS offers, SUM(state = 'ENABLED') AS enabled_offers
+		  FROM source_offers GROUP BY source_id
+		) o ON o.source_id = s.source_id
+		LEFT JOIN (
+		  SELECT o2.source_id AS source_id,
+		         SUM(h.last_outcome = 'PASS') AS health_pass,
+		         SUM(h.last_outcome = 'FAIL') AS health_fail
+		  FROM source_offers o2
+		  JOIN scoped_health h ON h.resource_id = o2.resource_id
+		  GROUP BY o2.source_id
+		) h ON h.source_id = s.source_id
+		LEFT JOIN (
+		  SELECT o3.source_id AS source_id, MAX(va.completed_at) AS last_validated
+		  FROM validation_attempts va
+		  JOIN proxy_resources r2 ON r2.resource_id = va.resource_id
+		  JOIN source_offers o3 ON o3.resource_id = r2.resource_id
+		  GROUP BY o3.source_id
+		) va ON va.source_id = s.source_id
+		ORDER BY s.source_id`)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []SourceOverview
+	for rows.Next() {
+		var o SourceOverview
+		var enabled int
+		var lastValidated any
+		if err := rows.Scan(&o.SourceID, &o.ParserType, &enabled, &o.Offers, &o.EnabledOffers,
+			&o.HealthPass, &o.HealthFail, &lastValidated); err != nil {
+			return nil, mapErr(err)
+		}
+		o.Enabled = enabled == 1
+		if lastValidated != nil {
+			if v, ok := lastValidated.(string); ok {
+				o.LastValidated = &v
+			}
+		}
+		out = append(out, o)
+	}
+	return out, mapErr(rows.Err())
+}
+
+type SelectionFilters struct {
+	Profile      string
+	Now          time.Time
+	UsefulCutoff time.Time
+	Transports   []domain.Transport
+	Kinds        []domain.ResourceKind
+	SourceIDs    []string
+	ExcludeByIDs []string
+	Limit        int
+}
+
+// SelectCandidates returns eligible, unthrottled candidates ordered so that
+// recently passing, then untested, then failing resources are tried first.
+func (s *Store) SelectCandidates(ctx context.Context, f SelectionFilters) ([]domain.Candidate, error) {
+	if f.Limit <= 0 {
+		f.Limit = 8
+	}
+	args := []any{f.Profile, fmtTime(f.UsefulCutoff), fmtTime(f.UsefulCutoff), fmtTime(f.Now), fmtTime(f.Now), fmtTime(f.Now)}
+	query := `
+		SELECT o.offer_id, o.source_id, o.resource_id, o.source_record_id, o.source_generation,
+		       o.provider_expires_at, o.local_retention_deadline, o.expiry_basis, o.claims_json,
+		       o.max_pool_leases, o.capacity_group, o.state,
+		       r.transport, r.host, r.port, r.credential_version, r.session_policy, r.resource_kind,
+		       COALESCE(cr.username, ''), COALESCE(cr.password, ''),
+		       COALESCE(h.last_outcome, 'UNKNOWN'), h.last_pass_at, COALESCE(h.consecutive_failures, 0)
+		FROM source_offers o
+		JOIN proxy_resources r ON r.resource_id = o.resource_id AND r.disabled = 0
+		JOIN sources src ON src.source_id = o.source_id AND src.enabled = 1
+		LEFT JOIN proxy_credentials cr ON cr.credential_version = r.credential_version
+		LEFT JOIN scoped_health h
+		  ON h.resource_id = r.resource_id
+		 AND h.context_key = r.credential_version || '|' || r.session_policy
+		 AND h.profile = ?
+		WHERE o.state = 'ENABLED'
+		  AND (o.provider_expires_at IS NULL OR o.provider_expires_at > ?)
+		  AND (o.local_retention_deadline IS NULL OR o.local_retention_deadline > ?)
+		  AND (h.cooldown_until IS NULL OR h.cooldown_until <= ?)
+		  AND (
+		        (SELECT COUNT(*) FROM leases l
+		         WHERE l.resource_id = r.resource_id AND l.state = 'ACTIVE' AND l.deadline > ?)
+		      + (SELECT COUNT(*) FROM reservations rv
+		         WHERE rv.resource_id = r.resource_id
+		           AND rv.state IN ('RESERVED','VALIDATING') AND rv.deadline > ?)
+		      ) < o.max_pool_leases`
+	if len(f.Transports) > 0 {
+		query += " AND r.transport IN (" + placeholders(len(f.Transports)) + ")"
+		for _, v := range f.Transports {
+			args = append(args, string(v))
+		}
+	}
+	if len(f.Kinds) > 0 {
+		query += " AND r.resource_kind IN (" + placeholders(len(f.Kinds)) + ")"
+		for _, v := range f.Kinds {
+			args = append(args, string(v))
+		}
+	}
+	if len(f.SourceIDs) > 0 {
+		query += " AND o.source_id IN (" + placeholders(len(f.SourceIDs)) + ")"
+		for _, v := range f.SourceIDs {
+			args = append(args, v)
+		}
+	}
+	if len(f.ExcludeByIDs) > 0 {
+		query += " AND r.resource_id NOT IN (" + placeholders(len(f.ExcludeByIDs)) + ")"
+		for _, v := range f.ExcludeByIDs {
+			args = append(args, v)
+		}
+	}
+	query += `
+		ORDER BY (h.last_outcome = 'PASS') DESC,
+		         (h.last_outcome = 'FAIL') ASC,
+		         h.last_pass_at DESC,
+		         random()
+		LIMIT ?`
+	args = append(args, f.Limit)
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []domain.Candidate
+	for rows.Next() {
+		var c domain.Candidate
+		var providerExp, retention, lastPass any
+		var claimsJSON string
+		var port int
+		if err := rows.Scan(
+			&c.Offer.ID, &c.Offer.SourceID, &c.Offer.ResourceID, &c.Offer.SourceRecordID,
+			&c.Offer.SourceGeneration, &providerExp, &retention, &c.Offer.ExpiryBasis,
+			&claimsJSON, &c.Offer.MaxPoolLeases, &c.Offer.CapacityGroup, &c.Offer.State,
+			&c.Resource.Conn.Transport, &c.Resource.Conn.Host, &port,
+			&c.Resource.CredentialVersion, &c.Resource.Session, &c.Resource.Kind,
+			&c.Resource.Conn.Username, &c.Resource.Conn.Password,
+			&c.LastOutcome, &lastPass, &c.ConsecutiveFailures,
+		); err != nil {
+			return nil, mapErr(err)
+		}
+		c.Resource.Conn.Port = port
+		c.Resource.ID = c.Offer.ResourceID
+		if c.Offer.ProviderExpiresAt, err = scanTime(providerExp); err != nil {
+			return nil, err
+		}
+		if c.Offer.LocalRetentionDeadline, err = scanTime(retention); err != nil {
+			return nil, err
+		}
+		if c.LastPassAt, err = scanTime(lastPass); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(claimsJSON), &c.Offer.Claims); err != nil {
+			return nil, fmt.Errorf("decode claims: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, mapErr(rows.Err())
+}
+
+func placeholders(n int) string {
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}

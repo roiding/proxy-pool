@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proxy Pool 控制台</title>
+<style>
+  :root {
+    --bg: #101418;
+    --panel: #171d24;
+    --panel-edge: #232c36;
+    --ink: #d7dee6;
+    --ink-dim: #7d8a97;
+    --accent: #3fb27f;
+    --warn: #d9a441;
+    --bad: #d06559;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--mono); font-size: 14px; line-height: 1.55;
+    background-image: radial-gradient(ellipse 90% 60% at 50% -10%, #1a232e 0%, transparent 60%);
+    min-height: 100vh;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+    padding: 18px 24px; border-bottom: 1px solid var(--panel-edge);
+  }
+  header h1 { font-size: 16px; margin: 0; letter-spacing: .12em; text-transform: uppercase; }
+  header h1 b { color: var(--accent); }
+  header .spacer { flex: 1; }
+  header button, .card button {
+    font: inherit; background: transparent; color: var(--ink-dim);
+    border: 1px solid var(--panel-edge); border-radius: 4px; padding: 4px 12px; cursor: pointer;
+  }
+  header button:hover, .card button:hover { color: var(--ink); border-color: var(--ink-dim); }
+  main { display: grid; grid-template-columns: minmax(320px, 5fr) minmax(320px, 7fr); gap: 20px; padding: 24px; max-width: 1180px; margin: 0 auto; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--panel-edge); border-radius: 8px;
+    padding: 18px; margin-bottom: 20px;
+  }
+  .card h2 { font-size: 13px; margin: 0 0 14px; color: var(--ink-dim); letter-spacing: .1em; text-transform: uppercase; }
+  label { display: block; margin: 10px 0 4px; color: var(--ink-dim); font-size: 12px; }
+  input[type=text], textarea {
+    width: 100%; background: #0c1014; color: var(--ink); border: 1px solid var(--panel-edge);
+    border-radius: 4px; padding: 8px 10px; font: inherit;
+  }
+  textarea { min-height: 140px; resize: vertical; }
+  .row { display: flex; gap: 12px; }
+  .row > * { flex: 1; }
+  .primary {
+    background: var(--accent) !important; border-color: var(--accent) !important;
+    color: #0c1210 !important; font-weight: 600; margin-top: 14px;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--panel-edge); white-space: nowrap; }
+  th { color: var(--ink-dim); font-weight: 500; }
+  td.num, th.num { text-align: right; }
+  .ok { color: var(--accent); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  .muted { color: var(--ink-dim); }
+  #stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; }
+  .stat { background: #0c1014; border: 1px solid var(--panel-edge); border-radius: 6px; padding: 10px 12px; }
+  .stat .v { font-size: 20px; } .stat .k { font-size: 11px; color: var(--ink-dim); }
+  #result { white-space: pre-wrap; word-break: break-all; max-height: 180px; overflow: auto;
+    background: #0c1014; border: 1px solid var(--panel-edge); border-radius: 4px;
+    padding: 10px; margin-top: 12px; font-size: 12px; color: var(--ink-dim); }
+  #login {
+    position: fixed; inset: 0; background: rgba(8,10,13,.86); display: flex;
+    align-items: center; justify-content: center;
+  }
+  #login .card { width: 360px; }
+  .flash { margin-top: 10px; font-size: 12px; }
+  .flash.err { color: var(--bad); } .flash.good { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>proxy<b>-</b>pool 控制台</h1>
+  <span class="muted" id="whoami"></span>
+  <span class="spacer"></span>
+  <button id="refreshBtn">刷新</button>
+  <button id="logoutBtn">退出</button>
+</header>
+<main>
+  <section>
+    <div class="card">
+      <h2>导入自定义 txt 渠道</h2>
+      <label>渠道 ID（小写字母数字，例如 manual）</label>
+      <input type="text" id="sourceId" value="manual" spellcheck="false">
+      <div class="row">
+        <div>
+          <label>本地保留时长（分钟，0 = 不限）</label>
+          <input type="text" id="retentionMin" value="0">
+        </div>
+        <div>
+          <label>同时租用上限</label>
+          <input type="text" id="maxLeases" value="1">
+        </div>
+      </div>
+      <label>代理列表（http://user:pass@host:port，每行一条，支持选文件）</label>
+      <input type="file" id="file" accept=".txt,text/plain">
+      <textarea id="content" placeholder="http://user:pass@1.2.3.4:8080" spellcheck="false"></textarea>
+      <button class="primary" id="importBtn">解析并导入（整表替换）</button>
+      <div id="result" class="flash muted">等待导入…</div>
+    </div>
+  </section>
+  <section>
+    <div class="card">
+      <h2>池子状态</h2>
+      <div id="stats" class="muted">加载中…</div>
+    </div>
+    <div class="card">
+      <h2>渠道健康（含定期验活结果）</h2>
+      <div id="valStatus" class="muted" style="font-size:12px;margin-bottom:10px">尚未运行验证（每晚自动一次，也可在下方手动触发）</div>
+      <table>
+        <thead><tr>
+          <th>渠道</th><th class="num">供给</th><th class="num">通过</th>
+          <th class="num">失败</th><th>最近验活</th><th>状态</th>
+          <th>操作</th>
+        </tr></thead>
+        <tbody id="sources"><tr><td colspan="7" class="muted">加载中…</td></tr></tbody>
+      </table>
+      <p class="muted" style="font-size:12px;margin-bottom:0">
+        自建渠道每天深夜全量验活一次，连续失败的资源会被清理；每次下发获取仍会重新验活。
+      </p>
+    </div>
+    <div class="card">
+      <h2>今日渠道成功率</h2>
+      <table>
+        <thead><tr>
+          <th>渠道</th><th class="num">代理数</th><th class="num">通过</th>
+          <th class="num">失败</th><th class="num">成功率</th>
+        </tr></thead>
+        <tbody id="daily"><tr><td colspan="5" class="muted">加载中…</td></tr></tbody>
+      </table>
+      <p class="muted" style="font-size:12px;margin-bottom:0">
+        按单个代理去重统计今天（服务器本地时间）的验活结果，每个代理取其当天最新一次结果。
+      </p>
+    </div>
+  </section>
+</main>
+<div id="login" hidden>
+  <div class="card">
+    <h2>输入 API Token</h2>
+    <input type="text" id="token" placeholder="config.json 中的 api_token" spellcheck="false">
+    <button class="primary" id="loginBtn">进入控制台</button>
+    <div id="loginMsg" class="flash"></div>
+  </div>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+
+function authFetch(url, opts = {}) {
+  opts.credentials = "same-origin";
+  opts.headers = Object.assign({}, opts.headers, { "X-PP-Admin": "1" });
+  return fetch(url, opts).then((r) => {
+    if (r.status === 401) { showLogin("会话已过期，请重新登录"); throw new Error("unauthorized"); }
+    return r;
+  });
+}
+
+function showLogin(msg) {
+  $("login").hidden = false;
+  $("loginMsg").textContent = msg || "";
+  $("loginMsg").className = "flash err";
+}
+
+$("loginBtn").onclick = () => {
+  fetch("/admin/login", {
+    method: "POST", credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: $("token").value.trim() }),
+  }).then((r) => {
+    if (r.ok) {
+      $("login").hidden = true;
+      $("token").value = "";
+      refresh();
+    } else { showLogin("Token 校验失败"); }
+  }).catch(() => showLogin("登录请求失败"));
+};
+
+$("logoutBtn").onclick = () => {
+  fetch("/admin/logout", { method: "POST", credentials: "same-origin" })
+    .finally(() => showLogin(""));
+};
+
+$("file").onchange = async (e) => {
+  const f = e.target.files[0];
+  if (f) $("content").value = await f.text();
+};
+
+$("importBtn").onclick = async () => {
+  const src = $("sourceId").value.trim();
+  const content = $("content").value;
+  const box = $("result");
+  if (!src || !content.trim()) { box.textContent = "请填写渠道 ID 和代理列表"; box.className = "flash err"; return; }
+  box.textContent = "导入中…"; box.className = "flash";
+  try {
+    const retention = parseInt($("retentionMin").value || "0", 10) * 60000;
+    const maxLeases = parseInt($("maxLeases").value || "1", 10);
+    const create = await authFetch("/v1/sources", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_id: src, parser_type: "lines_v1",
+        local_retention_ms: retention, max_pool_leases: maxLeases, enabled: true }),
+    });
+    if (!create.ok) { throw new Error(await create.text()); }
+    const imp = await authFetch("/v1/sources/" + encodeURIComponent(src) + "/imports", {
+      method: "POST", headers: { "Content-Type": "text/plain" }, body: content,
+    });
+    const data = await imp.json();
+    if (!imp.ok) { throw new Error(JSON.stringify(data)); }
+    box.textContent = "导入完成：" + JSON.stringify(data, null, 2);
+    box.className = "flash good";
+    refresh();
+  } catch (err) {
+    if (err.message !== "unauthorized") {
+      box.textContent = "导入失败：" + err.message;
+      box.className = "flash err";
+    }
+  }
+};
+
+async function refresh() {
+  try {
+    const [statsR, sourcesR, dailyR, valR] = await Promise.all([
+      authFetch("/v1/admin/stats"), authFetch("/v1/admin/sources"),
+      authFetch("/v1/admin/daily"), authFetch("/v1/admin/validation")]);
+    const stats = await statsR.json();
+    const sources = await sourcesR.json();
+    const daily = await dailyR.json();
+    const val = await valR.json();
+    pollDelay = val.running ? 3000 : 15000;
+    $("whoami").textContent = "已登录";
+    const items = [
+      ["渠道", stats.sources], ["资源", stats.resources], ["有效供给", stats.enabled_offers],
+      ["活跃租约", stats.active_leases], ["判定通过资源", stats.health_pass], ["判定失败资源", stats.health_fail],
+    ];
+    $("stats").innerHTML = items.map(([k, v]) =>
+      '<div class="stat"><div class="v">' + v + '</div><div class="k">' + k + '</div></div>').join("");
+    if (val.running) {
+      $("valStatus").innerHTML = "验证进行中（" + (val.source_id ? "渠道 " + val.source_id : "全部渠道") +
+        "）：本轮已探测 <b>" + val.probed + "</b>，本轮已清理 <b>" + val.retired + "</b>";
+      $("valStatus").className = "flash warn";
+    } else if (val.last_finished_at) {
+      $("valStatus").textContent = "上次验证完成 " + new Date(val.last_finished_at).toLocaleString() +
+        "：探测 " + val.probed + "，清理 " + val.retired + (val.last_error ? "，错误：" + val.last_error : "");
+      $("valStatus").className = "muted";
+    } else {
+      $("valStatus").textContent = "尚未运行验证（每晚自动一次，也可在下方手动触发）";
+    }
+    $("sources").innerHTML = sources.length ? sources.map((s) => {
+      const state = s.enabled ? '<span class="ok">启用</span>' : '<span class="bad">停用</span>';
+      const last = s.last_validated_at ? new Date(s.last_validated_at).toLocaleString() : "—";
+      const health = s.health_fail > 0 ? '<span class="warn">' + s.health_fail + '</span>' : "0";
+      return "<tr><td>" + s.source_id + "</td><td class='num'>" + s.enabled_offers +
+        "/" + s.offers + "</td><td class='num ok'>" + s.health_pass +
+        "</td><td class='num'>" + health + "</td><td>" + last + "</td><td>" + state +
+        "</td><td><button class='validateBtn' data-src='" + s.source_id + "'" +
+        (val.running ? " disabled" : "") + ">验活</button></td></tr>";
+    }).join("") : '<tr><td colspan="7" class="muted">还没有渠道，先在左侧导入</td></tr>';
+    $("daily").innerHTML = daily.length ? daily.map((d) => {
+      const rate = (d.pass_rate * 100).toFixed(1) + "%";
+      const cls = d.pass_rate >= 0.8 ? "ok" : (d.pass_rate >= 0.5 ? "warn" : "bad");
+      return "<tr><td>" + d.source_id + "</td><td class='num'>" + d.proxies +
+        "</td><td class='num ok'>" + d.pass + "</td><td class='num'>" + d.fail +
+        "</td><td class='num " + cls + "'>" + rate + "</td></tr>";
+    }).join("") : '<tr><td colspan="5" class="muted">今天还没有验活记录</td></tr>';
+  } catch (err) { /* 401 already handled */ }
+}
+
+$("refreshBtn").onclick = refresh;
+let pollDelay = 15000;
+refresh();
+function schedule() {
+  setTimeout(async () => {
+    if ($("login").hidden) { await refresh(); }
+    schedule();
+  }, pollDelay);
+}
+schedule();
+
+function validateSource(id) {
+  authFetch("/v1/sources/" + encodeURIComponent(id) + "/validate", { method: "POST" })
+    .then((r) => r.json())
+    .then((d) => {
+      if (d.status === "started") {
+        $("valStatus").textContent = "已开始验证渠道 " + id + "，进度会自动刷新…";
+        $("valStatus").className = "flash good";
+        refresh();
+      } else if (d.error) {
+        $("valStatus").textContent = "触发失败：" + d.error.code + " " + d.error.message;
+        $("valStatus").className = "flash err";
+      }
+    })
+    .catch(() => {});
+}
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest(".validateBtn");
+  if (btn && !btn.disabled) { validateSource(btn.dataset.src); }
+});
+</script>
+</body>
+</html>

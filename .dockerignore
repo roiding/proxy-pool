@@ -1,0 +1,12 @@
+.git
+.github
+docs
+tests
+data
+*.db
+*.db-wal
+*.db-shm
+*.lock
+config.json
+config.example.json
+README.md
