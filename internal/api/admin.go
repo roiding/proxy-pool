@@ -54,6 +54,16 @@ func (s *Server) handleSourceValidate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started", "source_id": id})
 }
 
+func (s *Server) handleDeleteSource(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	revoked, err := s.store.DeleteSource(r.Context(), id, time.Now())
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "source_id": id, "removed_offers": revoked})
+}
+
 func (s *Server) handleValidationStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.nightly.Status())
 }

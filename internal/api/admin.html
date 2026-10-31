@@ -100,10 +100,10 @@
           <input type="text" id="maxLeases" value="1">
         </div>
       </div>
-      <label>代理列表（http://user:pass@host:port，每行一条，支持选文件）</label>
+      <label>代理列表（http:// 或 socks5:// user:pass@host:port，每行一条，支持选文件）</label>
       <input type="file" id="file" accept=".txt,text/plain">
       <textarea id="content" placeholder="http://user:pass@1.2.3.4:8080" spellcheck="false"></textarea>
-      <button class="primary" id="importBtn">解析并导入（整表替换）</button>
+      <button class="primary" id="importBtn">解析并导入（追加到池子）</button>
       <div id="result" class="flash muted">等待导入…</div>
     </div>
   </section>
@@ -124,7 +124,7 @@
         <tbody id="sources"><tr><td colspan="7" class="muted">加载中…</td></tr></tbody>
       </table>
       <p class="muted" style="font-size:12px;margin-bottom:0">
-        自建渠道每天深夜全量验活一次，连续失败的资源会被清理；每次下发获取仍会重新验活。
+        自建渠道每天深夜全量验活一次，认证失败立即清理、其他失败达阈值清理；每次下发获取仍会重新验活。
       </p>
     </div>
     <div class="card">
@@ -259,7 +259,8 @@ async function refresh() {
         "/" + s.offers + "</td><td class='num ok'>" + s.health_pass +
         "</td><td class='num'>" + health + "</td><td>" + last + "</td><td>" + state +
         "</td><td><button class='validateBtn' data-src='" + s.source_id + "'" +
-        (val.running ? " disabled" : "") + ">验活</button></td></tr>";
+        (val.running ? " disabled" : "") + ">验活</button> " +
+        "<button class='deleteBtn' data-src='" + s.source_id + "'>删除</button></td></tr>";
     }).join("") : '<tr><td colspan="7" class="muted">还没有渠道，先在左侧导入</td></tr>';
     $("daily").innerHTML = daily.length ? daily.map((d) => {
       const rate = (d.pass_rate * 100).toFixed(1) + "%";
@@ -297,9 +298,28 @@ function validateSource(id) {
     })
     .catch(() => {});
 }
+
+function deleteSource(id) {
+  if (!confirm("确定删除渠道 " + id + "？其全部供给会被移除，重新上传可从零重建。")) { return; }
+  authFetch("/v1/sources/" + encodeURIComponent(id), { method: "DELETE" })
+    .then(async (r) => {
+      const d = await r.json();
+      if (r.ok) {
+        $("valStatus").textContent = "已删除渠道 " + id + "（移除供给 " + d.removed_offers + " 条）";
+        $("valStatus").className = "flash good";
+      } else {
+        $("valStatus").textContent = "删除失败：" + d.error.code + " " + d.error.message;
+        $("valStatus").className = "flash err";
+      }
+      refresh();
+    })
+    .catch(() => {});
+}
 document.addEventListener("click", (e) => {
   const btn = e.target.closest(".validateBtn");
   if (btn && !btn.disabled) { validateSource(btn.dataset.src); }
+  const del = e.target.closest(".deleteBtn");
+  if (del) { deleteSource(del.dataset.src); }
 });
 </script>
 </body>

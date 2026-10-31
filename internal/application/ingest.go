@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"time"
 
 	"proxypool/internal/domain"
@@ -43,7 +44,9 @@ func (s *IngestService) EnsureSource(ctx context.Context, id string, cfg SourceC
 	if cfg.DefaultTransport == "" {
 		cfg.DefaultTransport = domain.TransportHTTP
 	}
-	if cfg.DefaultTransport != domain.TransportHTTP {
+	switch cfg.DefaultTransport {
+	case domain.TransportHTTP, domain.TransportSOCKS5:
+	default:
 		return domain.UnsupportedTransport(string(cfg.DefaultTransport))
 	}
 	configJSON, err := json.Marshal(cfg)
@@ -68,7 +71,6 @@ type ImportResult struct {
 	Added    int                `json:"added"`
 	Updated  int                `json:"updated"`
 	Skipped  int                `json:"skipped"`
-	Revoked  int                `json:"revoked"`
 	Rejected []custom.LineError `json:"rejected,omitempty"`
 }
 
@@ -92,11 +94,11 @@ func (s *IngestService) ImportLines(ctx context.Context, sourceID, content strin
 		AllowPrivate:     s.allowPrivate,
 	}, content)
 	now := s.Now()
-	generation := contentGeneration(content)
+	const generation = "pool"
 	candidates := make([]domain.NormalizedCandidate, 0, len(parsed))
 	for _, c := range parsed {
 		c.SourceID = sourceID
-		c.RecordID = fmt.Sprintf("line-%d", len(candidates)+1)
+		c.RecordID = recordFingerprint(c.Conn)
 		c.Generation = generation
 		credVer := domain.CredentialVersion(s.secret, c.Conn.Username, c.Conn.Password)
 		c.CredentialVersion = credVer
@@ -119,7 +121,7 @@ func (s *IngestService) ImportLines(ctx context.Context, sourceID, content strin
 		c.MaxPoolLeases = cfg.MaxPoolLeases
 		candidates = append(candidates, c)
 	}
-	counts, err := s.store.ImportSnapshot(ctx, sourceID, generation, candidates, now)
+	counts, err := s.store.ImportCandidates(ctx, candidates, now)
 	if err != nil {
 		return ImportResult{}, domain.StoreUnavailable(err)
 	}
@@ -127,14 +129,15 @@ func (s *IngestService) ImportLines(ctx context.Context, sourceID, content strin
 		Added:    counts.Added,
 		Updated:  counts.Updated,
 		Skipped:  counts.Skipped,
-		Revoked:  counts.Revoked,
 		Rejected: rejected,
 	}, nil
 }
 
-// contentGeneration keys a self-uploaded list by its exact content: identical
-// re-uploads are idempotent, changed lists start a new generation.
-func contentGeneration(content string) string {
-	sum := sha256.Sum256([]byte(content))
-	return "imp-" + hex.EncodeToString(sum[:])[:16]
+// recordFingerprint gives each uploaded proxy a stable source-record ID
+// derived from its content, so the same proxy keeps the same offer across
+// re-uploads and tombstones survive file reshuffling.
+func recordFingerprint(conn domain.Connection) string {
+	sum := sha256.Sum256([]byte(string(conn.Transport) + "|" + conn.Host + "|" +
+		strconv.Itoa(conn.Port) + "|" + conn.Username + "|" + conn.Password))
+	return "px-" + hex.EncodeToString(sum[:])[:16]
 }

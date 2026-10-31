@@ -498,7 +498,7 @@ Separate "not selected now", "temporarily excluded", and "removed permanently".
 | --- | --- | --- |
 | Invalid format, unsupported transport, prohibited address | Quarantine/reject at ingestion | Source row error; never enter selectable inventory |
 | Known provider expiry / offer revocation | Exclude immediately at selection and commit | Expire/revoke that offer; preserve other live offers |
-| Auth failure such as proxy `407` | Stop allocating affected credential context; signal source/operator | Credential/account offer, not every user at the endpoint |
+| Auth failure such as proxy `407` or SOCKS5 auth rejection | Retire the resource immediately (revoke offers, plant tombstone) | Credential/account offer, not every user at the endpoint |
 | Attributed connect refusal / timeout / bad proxy negotiation | Exclude and apply jittered exponential cooldown | Transport/context health; seek another candidate |
 | Approved target policy rejects response | Exclude for the target profile | Do not impose a global transport-dead verdict |
 | Judge outage / validator DNS or TLS infrastructure failure | Mark inconclusive; circuit-break affected profile | No proxy failure increment; no delivery without a pass |
@@ -531,11 +531,12 @@ scheduled full validation pass per night for them
 (`custom_nightly_validation_time`, HH:MM server-local; empty disables). The
 pass pages through every eligible candidate (skipping leased and cooled-down
 resources), probes under the same profile, records attempts, and applies the
-same health and cooldown rules. When a resource reaches
-`custom_nightly_retire_failures` consecutive failures, its offers are revoked
-and tombstoned, so re-uploading the same list does not revive it. Results only
-influence ranking/eligibility; an acquire still performs its own fresh
-validation (invariant 1). The pass is single-flight and runs inside the
+same health and cooldown rules. Authentication failures are final evidence and
+retire the resource immediately; when a resource reaches
+`custom_nightly_retire_failures` consecutive attributed failures, its offers
+are revoked and tombstoned, so re-uploading the same list does not revive it.
+Results only influence ranking/eligibility; an acquire still performs its own
+fresh validation (invariant 1). The pass is single-flight and runs inside the
 deployment-wide probe slots; provider-API sources are never swept.
 The operator can also trigger an immediate pass for a single source from the
 console (`POST /v1/sources/{id}/validate`); it shares the same single-flight

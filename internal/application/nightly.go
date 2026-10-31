@@ -239,6 +239,13 @@ func (n *NightlyValidator) probeOne(ctx context.Context, runID string, cand doma
 	if err := n.store.RecordAttempt(ctx, ev, cand.Resource.ID, contextKey, detail); err != nil {
 		return err
 	}
+	// Wrong/expired credentials are final evidence: retire immediately
+	// instead of waiting for the consecutive-failure threshold.
+	if fail != nil && fail.Kind == validation.FailAuth {
+		if count, err := n.store.RetireResource(ctx, cand.Resource.ID, "AUTH_FAILED", n.Now()); err == nil && count > 0 {
+			n.addProgress(0, int64(count))
+		}
+	}
 	if fail == nil || fail.Attributed() {
 		return n.health.Record(ctx, cand.Resource.ID, contextKey,
 			validation.ProfileHTTPSBasicV1, outcome)

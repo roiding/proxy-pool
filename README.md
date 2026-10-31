@@ -3,7 +3,7 @@
 An extensible proxy-resource pool with strict, request-time validation.
 
 Status: v0.6, 2026-10-31. The Go vertical slice plus the self-upload workflow
-(web console with session login, snapshot imports, nightly full validation and
+(web console with session login, additive imports, nightly full validation and
 dead-proxy cleanup, per-source daily success rates, built-in signed judge) are
 implemented and tested.
 Remaining work is listed under Implementation status.
@@ -130,16 +130,22 @@ Implemented and covered by tests:
   results) under `internal/application/acquire.go`.
 - `lines_v1` custom import with address policy and HMAC-based canonical
   identity under `internal/integrations/custom/` and `internal/domain/`.
-- Self-upload snapshot semantics: generation keyed by content hash, missing
-  offers revoked on replacement, identical re-uploads idempotent.
+- Self-upload additive semantics: each line keeps a stable content-derived
+  record ID, re-uploads update offers in place, and dead supply is cleaned up
+  by validation instead of list replacement. HTTP and SOCKS5 lines are
+  supported (`http://` / `socks5://`, bare lines use the source's default).
 - Nightly full validation for custom sources (`custom_nightly_validation_time`,
-  default 03:00; `custom_nightly_retire_failures`, default 2): failed proxies
-  get cooldowns, and proxies reaching the consecutive-failure threshold have
-  their offers revoked with tombstones. Evidence never authorizes delivery.
+  default 03:00): authentication failures (e.g. proxy `407`, SOCKS5 auth
+  rejection) retire the resource immediately; other attributed failures apply
+  cooldowns and revoke offers with tombstones once the consecutive-failure
+  threshold (`custom_nightly_retire_failures`, default 2) is reached. Evidence
+  never authorizes delivery.
 - Embedded admin console at `/admin` with session login, `/v1/admin/sources`
   overview, `/v1/admin/daily` per-source success rates, and manual per-source
   validation via `POST /v1/sources/{id}/validate` with live progress at
-  `GET /v1/admin/validation`.
+  `GET /v1/admin/validation`. Channels can be removed with
+  `DELETE /v1/sources/{id}`, which drops their offers and tombstones so a
+  later re-upload rebuilds the pool from scratch.
 - Authenticated HTTP API (`acquire`, `release`, `feedback`, `sources`,
   `imports`, `stats`) under `internal/api/`.
 - In-process maintenance sweeps, singleton lock, and graceful shutdown.

@@ -17,10 +17,12 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"golang.org/x/net/proxy"
 	"proxypool/internal/domain"
 )
 
@@ -100,26 +102,10 @@ func ProbeHTTPSBasic(ctx context.Context, conn domain.Connection, judgeURL strin
 	fail := func(kind, format string, args ...any) (domain.Evidence, *Failure) {
 		return ev, &Failure{Kind: kind, Detail: fmt.Sprintf(format, args...)}
 	}
-	if conn.Transport != domain.TransportHTTP {
-		return fail(FailProxy, "transport %q unsupported by probe", conn.Transport)
-	}
-	proxyURL := &url.URL{Scheme: "http", Host: net.JoinHostPort(conn.Host, fmt.Sprintf("%d", conn.Port))}
-	if conn.Username != "" || conn.Password != "" {
-		proxyURL.User = url.UserPassword(conn.Username, conn.Password)
-	}
 	nonce := newNonce()
-	dialer := &net.Dialer{Timeout: limits.DialTimeout}
-	transport := &http.Transport{
-		Proxy:                 http.ProxyURL(proxyURL),
-		DialContext:           dialer.DialContext,
-		DialTLSContext:        nil,
-		TLSClientConfig:       &tls.Config{RootCAs: limits.RootCAs, MinVersion: tls.VersionTLS12},
-		TLSHandshakeTimeout:   limits.DialTimeout,
-		DisableCompression:    true,
-		ForceAttemptHTTP2:     false,
-		MaxIdleConns:          1,
-		IdleConnTimeout:       time.Millisecond,
-		ExpectContinueTimeout: time.Second,
+	transport, tfail := probeTransport(conn, limits)
+	if tfail != nil {
+		return ev, tfail
 	}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: limits.ProbeTotal}
@@ -143,13 +129,19 @@ func ProbeHTTPSBasic(ctx context.Context, conn domain.Connection, judgeURL strin
 			return fail(FailBudget, "request deadline reached during probe: %v", ctx.Err())
 		}
 		msg := err.Error()
+		lower := strings.ToLower(msg)
 		switch {
-		case strings.Contains(msg, "proxyconnect"):
+		case strings.Contains(lower, "proxyconnect"):
 			return fail(FailProxy, "proxy connection failed: %v", err)
-		case strings.Contains(strings.ToLower(msg), "proxy authentication required"):
+		case strings.Contains(lower, "proxy authentication required"):
 			// The proxy answered the CONNECT with 407 even though the
 			// configured credentials were sent: wrong/expired credentials.
 			return fail(FailAuth, "proxy rejected credentials (407): %v", err)
+		case strings.Contains(lower, "socks connect") && strings.Contains(lower, "authentication failed"):
+			// The SOCKS5 server refused the offered username/password.
+			return fail(FailAuth, "socks5 rejected credentials: %v", err)
+		case strings.Contains(lower, "socks connect"):
+			return fail(FailProxy, "socks5 connection failed: %v", err)
 		case isTLSVerifyError(err):
 			return fail(FailProxy, "TLS verification through proxy failed: %v", err)
 		default:
@@ -189,6 +181,50 @@ func ProbeHTTPSBasic(ctx context.Context, conn domain.Connection, judgeURL strin
 	ev.Outcome = "PASS"
 	ev.ObservedExitIP = ip.String()
 	return ev, nil
+}
+
+// probeTransport builds the HTTP transport that reaches the judge through the
+// candidate proxy: HTTP proxies are dialed with CONNECT, SOCKS5 proxies speak
+// RFC 1928 with optional username/password auth.
+func probeTransport(conn domain.Connection, limits Limits) (*http.Transport, *Failure) {
+	dialer := &net.Dialer{Timeout: limits.DialTimeout}
+	t := &http.Transport{
+		TLSClientConfig:       &tls.Config{RootCAs: limits.RootCAs, MinVersion: tls.VersionTLS12},
+		TLSHandshakeTimeout:   limits.DialTimeout,
+		DisableCompression:    true,
+		ForceAttemptHTTP2:     false,
+		MaxIdleConns:          1,
+		IdleConnTimeout:       time.Millisecond,
+		ExpectContinueTimeout: time.Second,
+	}
+	addr := net.JoinHostPort(conn.Host, strconv.Itoa(conn.Port))
+	switch conn.Transport {
+	case domain.TransportHTTP:
+		proxyURL := &url.URL{Scheme: "http", Host: addr}
+		if conn.Username != "" || conn.Password != "" {
+			proxyURL.User = url.UserPassword(conn.Username, conn.Password)
+		}
+		t.Proxy = http.ProxyURL(proxyURL)
+		t.DialContext = dialer.DialContext
+		return t, nil
+	case domain.TransportSOCKS5:
+		var auth *proxy.Auth
+		if conn.Username != "" || conn.Password != "" {
+			auth = &proxy.Auth{User: conn.Username, Password: conn.Password}
+		}
+		d, err := proxy.SOCKS5("tcp", addr, auth, dialer)
+		if err != nil {
+			return nil, &Failure{Kind: FailProxy, Detail: fmt.Sprintf("build socks5 dialer: %v", err)}
+		}
+		cd, ok := d.(proxy.ContextDialer)
+		if !ok {
+			return nil, &Failure{Kind: FailProxy, Detail: "socks5 dialer lacks context support"}
+		}
+		t.DialContext = cd.DialContext
+		return t, nil
+	default:
+		return nil, &Failure{Kind: FailProxy, Detail: fmt.Sprintf("transport %q unsupported by probe", conn.Transport)}
+	}
 }
 
 func isTLSVerifyError(err error) bool {

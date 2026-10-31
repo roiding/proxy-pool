@@ -15,13 +15,13 @@ type ImportCounts struct {
 	Added   int `json:"added"`
 	Updated int `json:"updated"`
 	Skipped int `json:"skipped"`
-	Revoked int `json:"revoked"`
 }
 
-// ImportSnapshot imports candidates and, because a self-uploaded list is an
-// authoritative full snapshot, revokes this source's enabled offers that are
-// absent from the uploaded generation. Health state and tombstones survive.
-func (s *Store) ImportSnapshot(ctx context.Context, sourceID, generation string, candidates []domain.NormalizedCandidate, now time.Time) (ImportCounts, error) {
+// ImportCandidates appends candidates to a self-uploaded source's pool.
+// Uploads are additive: every parsed line becomes a stable offer keyed by the
+// proxy's content fingerprint, and dead supply is cleaned up by validation,
+// not by list replacement. Identical re-uploads are idempotent.
+func (s *Store) ImportCandidates(ctx context.Context, candidates []domain.NormalizedCandidate, now time.Time) (ImportCounts, error) {
 	var counts ImportCounts
 	err := s.tx(ctx, func(t *sql.Tx) error {
 		counts = ImportCounts{}
@@ -51,7 +51,7 @@ func (s *Store) ImportSnapshot(ctx context.Context, sourceID, generation string,
 			if err := t.QueryRowContext(ctx, `
 				SELECT COUNT(*) FROM eviction_tombstones
 				WHERE resource_id = ? AND source_id = ? AND source_record_id = ?
-				  AND source_generation = ? AND reason = 'EVICTED'`,
+				  AND source_generation = ?`,
 				c.ResourceID, c.SourceID, c.RecordID, c.Generation).Scan(&tombstoned); err != nil {
 				return err
 			}
@@ -64,6 +64,16 @@ func (s *Store) ImportSnapshot(ctx context.Context, sourceID, generation string,
 				SELECT COUNT(*) FROM source_offers
 				WHERE source_id = ? AND source_record_id = ? AND source_generation = ?`,
 				c.SourceID, c.RecordID, c.Generation).Scan(&exists); err != nil {
+				return err
+			}
+			// Offers of the same resource left under older record-ID
+			// schemes would otherwise coexist with the stable offer; keep
+			// exactly one enabled offer per (source, resource).
+			if _, err := t.ExecContext(ctx, `
+				UPDATE source_offers SET state = 'REVOKED', updated_at = ?
+				WHERE source_id = ? AND resource_id = ? AND state = 'ENABLED'
+				  AND source_record_id != ?`,
+				fmtTime(now), c.SourceID, c.ResourceID, c.RecordID); err != nil {
 				return err
 			}
 			claimsJSON, err := json.Marshal(c.Claims)
@@ -94,18 +104,50 @@ func (s *Store) ImportSnapshot(ctx context.Context, sourceID, generation string,
 				counts.Added++
 			}
 		}
-		res, err := t.ExecContext(ctx, `
-			UPDATE source_offers SET state = 'REVOKED', updated_at = ?
-			WHERE source_id = ? AND state = 'ENABLED' AND source_generation != ?`,
-			fmtTime(now), sourceID, generation)
-		if err != nil {
-			return err
-		}
-		revoked, _ := res.RowsAffected()
-		counts.Revoked = int(revoked)
 		return nil
 	})
 	return counts, err
+}
+
+// DeleteSource removes a channel entirely: its offers, tombstones, and source
+// row are dropped so a future re-upload rebuilds the pool from scratch.
+// Health rows of resources left without any supply are cleaned up too.
+func (s *Store) DeleteSource(ctx context.Context, sourceID string, now time.Time) (int, error) {
+	revoked := 0
+	err := s.tx(ctx, func(t *sql.Tx) error {
+		var exists int
+		if err := t.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM sources WHERE source_id = ?`, sourceID).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			return domain.NotFound("source")
+		}
+		res, err := t.ExecContext(ctx,
+			`DELETE FROM source_offers WHERE source_id = ?`, sourceID)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err == nil {
+			revoked = int(n)
+		}
+		if _, err := t.ExecContext(ctx,
+			`DELETE FROM eviction_tombstones WHERE source_id = ?`, sourceID); err != nil {
+			return err
+		}
+		if _, err := t.ExecContext(ctx,
+			`DELETE FROM sources WHERE source_id = ?`, sourceID); err != nil {
+			return err
+		}
+		_, err = t.ExecContext(ctx, `
+			DELETE FROM scoped_health WHERE resource_id IN (
+			  SELECT r.resource_id FROM proxy_resources r
+			  WHERE NOT EXISTS (SELECT 1 FROM source_offers o WHERE o.resource_id = r.resource_id)
+			    AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.resource_id = r.resource_id AND l.state = 'ACTIVE')
+			)`)
+		return err
+	})
+	return revoked, mapErr(err)
 }
 
 type PeriodicFilters struct {

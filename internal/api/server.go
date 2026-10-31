@@ -44,6 +44,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/leases/{id}/release", s.handleRelease)
 	mux.HandleFunc("POST /v1/leases/{id}/feedback", s.handleFeedback)
 	mux.HandleFunc("POST /v1/sources", s.handleCreateSource)
+	mux.HandleFunc("DELETE /v1/sources/{id}", s.handleDeleteSource)
 	mux.HandleFunc("POST /v1/sources/{id}/imports", s.handleImport)
 	mux.HandleFunc("POST /v1/sources/{id}/validate", s.handleSourceValidate)
 	mux.HandleFunc("GET /v1/admin/stats", s.handleStats)

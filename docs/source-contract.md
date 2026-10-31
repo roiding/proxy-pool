@@ -196,16 +196,19 @@ Custom resource entry points are normalized through the same ingestion service:
 - Configuration-owned static endpoint/gateway definitions.
 
 Supported line forms should be declared, not inferred endlessly. URI examples
-may include `http://host:port`, percent-encoded authenticated URIs, and bracketed
-IPv6. A bare `host:port` requires a source-configured transport. Credentials with
-reserved characters require proper encoding or structured fields.
+may include `http://host:port`, `socks5://host:port`, percent-encoded
+authenticated URIs, and bracketed IPv6. A bare `host:port` requires a
+source-configured transport. Credentials with reserved characters require
+proper encoding or structured fields.
 
-Self-upload snapshot semantics (implemented): each upload's generation is the
-content hash, so identical re-uploads update offers in place and changed lists
-open a new generation whose import revokes this source's enabled offers missing
-from the list. Revocation never touches health history, bans, or other sources.
-Self-uploaded sources are the only ones eligible for bounded periodic
-revalidation, which refreshes health evidence but never authorizes delivery.
+Self-upload additive semantics (implemented): each line's source-record ID is
+the content fingerprint of its transport/host/port/credentials, so uploads are
+append-only and identical re-updates update offers in place. There is no
+snapshot replacement; dead supply is cleaned up by validation instead
+(authentication failures immediately, other attributed failures via the
+consecutive-failure threshold with tombstones). Self-uploaded sources are the
+only ones eligible for bounded periodic revalidation, which refreshes health
+evidence but never authorizes delivery.
 
 Do not initially add executable "custom fetch scripts", arbitrary remote import
 URLs, webhook callbacks, provider reservation/release APIs, or unknown formats.

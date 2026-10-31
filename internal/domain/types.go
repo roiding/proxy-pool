@@ -4,7 +4,10 @@ import "time"
 
 type Transport string
 
-const TransportHTTP Transport = "http"
+const (
+	TransportHTTP   Transport = "http"
+	TransportSOCKS5 Transport = "socks5"
+)
 
 type ResourceKind string
 

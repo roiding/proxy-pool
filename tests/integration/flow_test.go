@@ -357,6 +357,149 @@ func portOf(serverURL string) int {
 	return port
 }
 
+// fakeSocks5 implements the minimal SOCKS5 server the probe expects: method
+// negotiation, optional username/password auth (RFC 1929), CONNECT, and raw
+// relaying to the requested target.
+type fakeSocks5 struct {
+	ln          net.Listener
+	authUser    string
+	authPass    string
+	requireAuth bool
+}
+
+func startFakeSocks5(t *testing.T, authUser, authPass string) *fakeSocks5 {
+	t.Helper()
+	f := &fakeSocks5{
+		authUser:    authUser,
+		authPass:    authPass,
+		requireAuth: authUser != "",
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	f.ln = ln
+	go f.serve()
+	t.Cleanup(func() { ln.Close() })
+	return f
+}
+
+func (f *fakeSocks5) addr() string { return f.ln.Addr().String() }
+
+func (f *fakeSocks5) serve() {
+	for {
+		conn, err := f.ln.Accept()
+		if err != nil {
+			return
+		}
+		go f.handle(conn)
+	}
+}
+
+func (f *fakeSocks5) handle(conn net.Conn) {
+	defer conn.Close()
+	greeting, err := readN(conn, 2)
+	if err != nil || greeting[0] != 5 {
+		return
+	}
+	methods, err := readN(conn, int(greeting[1]))
+	if err != nil {
+		return
+	}
+	if f.requireAuth {
+		has := false
+		for _, m := range methods {
+			if m == 0x02 {
+				has = true
+			}
+		}
+		if !has {
+			return
+		}
+		if _, err := conn.Write([]byte{5, 0x02}); err != nil {
+			return
+		}
+		creds, err := readN(conn, 2)
+		if err != nil || creds[0] != 1 {
+			return
+		}
+		user, err := readN(conn, int(creds[1]))
+		if err != nil {
+			return
+		}
+		plen, err := readN(conn, 1)
+		if err != nil {
+			return
+		}
+		pass, err := readN(conn, int(plen[0]))
+		if err != nil {
+			return
+		}
+		if string(user) != f.authUser || string(pass) != f.authPass {
+			_, _ = conn.Write([]byte{1, 0x01})
+			return
+		}
+		if _, err := conn.Write([]byte{1, 0x00}); err != nil {
+			return
+		}
+	} else {
+		if _, err := conn.Write([]byte{5, 0x00}); err != nil {
+			return
+		}
+	}
+	req, err := readN(conn, 4)
+	if err != nil || req[0] != 5 || req[1] != 1 {
+		return
+	}
+	var host string
+	switch req[3] {
+	case 1:
+		ip, err := readN(conn, 4)
+		if err != nil {
+			return
+		}
+		host = net.IP(ip).String()
+	case 3:
+		l, err := readN(conn, 1)
+		if err != nil {
+			return
+		}
+		name, err := readN(conn, int(l[0]))
+		if err != nil {
+			return
+		}
+		host = string(name)
+	default:
+		return
+	}
+	portBytes, err := readN(conn, 2)
+	if err != nil {
+		return
+	}
+	port := int(portBytes[0])<<8 | int(portBytes[1])
+	dst, err := net.DialTimeout("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)), 2*time.Second)
+	if err != nil {
+		_, _ = conn.Write([]byte{5, 1, 0, 1, 0, 0, 0, 0, 0, 0})
+		return
+	}
+	defer dst.Close()
+	if _, err := conn.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
+		return
+	}
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(dst, conn); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(conn, dst); done <- struct{}{} }()
+	<-done
+}
+
+func readN(r io.Reader, n int) ([]byte, error) {
+	b := make([]byte, n)
+	if _, err := io.ReadFull(r, b); err != nil {
+		return nil, err
+	}
+	return b, nil
+}
+
 func TestAPIEndToEnd(t *testing.T) {
 	j := startJudge(t)
 	proxy := startFakeProxy(t)
@@ -468,7 +611,7 @@ func TestNightlyValidationRetiresDeadProxies(t *testing.T) {
 	}
 }
 
-func TestImportSnapshotReplacesMissingOffers(t *testing.T) {
+func TestImportLinesAppendsToPool(t *testing.T) {
 	j := startJudge(t)
 	e := newEnv(t, j, nil)
 	if err := e.ingest.EnsureSource(context.Background(), "manual",
@@ -484,19 +627,124 @@ func TestImportSnapshotReplacesMissingOffers(t *testing.T) {
 	if derr != nil {
 		t.Fatalf("second import: %v", derr)
 	}
-	if second.Added != 1 || second.Revoked != 2 {
-		t.Fatalf("snapshot counts wrong: %+v", second)
+	if second.Added != 0 || second.Updated != 1 {
+		t.Fatalf("append counts wrong: %+v", second)
 	}
 	again, derr := e.ingest.ImportLines(context.Background(), "manual", "1.2.3.4:8080\n")
-	if derr != nil || again.Updated != 1 || again.Revoked != 0 || again.Added != 0 {
+	if derr != nil || again.Updated != 1 || again.Added != 0 {
 		t.Fatalf("idempotent re-upload wrong: %+v", again)
 	}
 	stats, err := e.store.Stats(context.Background())
 	if err != nil {
 		t.Fatalf("stats: %v", err)
 	}
-	if stats.EnabledOffers != 1 || stats.Resources != 2 {
-		t.Fatalf("inventory after replacement: %+v", stats)
+	if stats.EnabledOffers != 2 || stats.Resources != 2 {
+		t.Fatalf("inventory after append: %+v", stats)
+	}
+}
+
+func TestDeleteSourceViaAPI(t *testing.T) {
+	j := startJudge(t)
+	proxy := startFakeProxy(t)
+	e := newEnv(t, j, nil)
+	e.importProxy(t, "manual", fmt.Sprintf("http://127.0.0.1:%d", portOf(proxy.URL)))
+	httpSrv := httptest.NewServer(api.NewServer(e.cfg, testLogger(),
+		e.acquire, e.ingest, e.leases, e.store, e.nightly).Handler())
+	defer httpSrv.Close()
+
+	del := func(id string) (int, []byte) {
+		req, _ := http.NewRequest(http.MethodDelete, httpSrv.URL+"/v1/sources/"+id, nil)
+		req.Header.Set("Authorization", "Bearer "+e.cfg.APIToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("delete %s: %v", id, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode, body
+	}
+	if code, _ := del("nope"); code != http.StatusNotFound {
+		t.Fatalf("delete unknown source status=%d", code)
+	}
+	code, bodyBytes := del("manual")
+	if code != http.StatusOK {
+		t.Fatalf("delete status=%d", code)
+	}
+	var body struct {
+		RemovedOffers int `json:"removed_offers"`
+	}
+	if err := json.Unmarshal(bodyBytes, &body); err != nil {
+		t.Fatalf("decode delete response: %v", err)
+	}
+	if body.RemovedOffers != 1 {
+		t.Fatalf("removed_offers=%d, want 1", body.RemovedOffers)
+	}
+	stats, err := e.store.Stats(context.Background())
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if stats.EnabledOffers != 0 {
+		t.Fatalf("offers survived deletion: %+v", stats)
+	}
+	// Re-uploading after deletion rebuilds the channel from scratch.
+	e.importProxy(t, "manual", fmt.Sprintf("http://127.0.0.1:%d", portOf(proxy.URL)))
+	stats, err = e.store.Stats(context.Background())
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if stats.EnabledOffers != 1 {
+		t.Fatalf("re-upload after deletion: %+v", stats)
+	}
+}
+
+func TestAcquireSupportsSocks5(t *testing.T) {
+	j := startJudge(t)
+	p := startFakeSocks5(t, "", "")
+	e := newEnv(t, j, nil)
+	e.importProxy(t, "manual", "socks5://"+p.addr())
+
+	result, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
+	if derr != nil || result.Delivered != 1 {
+		t.Fatalf("socks5 acquire: %v %+v", derr, result)
+	}
+	if got := result.Items[0].Conn.Transport; got != domain.TransportSOCKS5 {
+		t.Fatalf("transport = %q, want socks5", got)
+	}
+	if result.Items[0].Validation.ObservedExitIP != "203.0.113.7" {
+		t.Fatalf("evidence wrong: %+v", result.Items[0].Validation)
+	}
+}
+
+func TestSocks5AuthFailureRetiresImmediately(t *testing.T) {
+	j := startJudge(t)
+	p := startFakeSocks5(t, "realuser", "realpass")
+	e := newEnv(t, j, nil)
+	if err := e.ingest.EnsureSource(context.Background(), "manual",
+		application.SourceConfig{DefaultTransport: domain.TransportSOCKS5, MaxPoolLeases: 1}, true); err != nil {
+		t.Fatalf("ensure source: %v", err)
+	}
+	if _, derr := e.ingest.ImportLines(context.Background(), "manual",
+		"socks5://wronguser:wrongpass@"+p.addr()+"\n"); derr != nil {
+		t.Fatalf("import: %v", derr)
+	}
+	if _, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1}); derr == nil {
+		t.Fatal("acquire with wrong socks5 credentials should fail")
+	}
+	stats, err := e.store.Stats(context.Background())
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if stats.EnabledOffers != 0 {
+		t.Fatalf("auth-failed socks5 offer not retired: %+v", stats)
+	}
+	// The same dead proxy must not be revived by re-upload.
+	res, derr := e.ingest.ImportLines(context.Background(), "manual",
+		"socks5://wronguser:wrongpass@"+p.addr()+"\n")
+	if derr != nil {
+		t.Fatalf("re-import: %v", derr)
+	}
+	if res.Added != 0 || res.Skipped != 1 {
+		t.Fatalf("tombstone did not block revival: %+v", res)
 	}
 }
 

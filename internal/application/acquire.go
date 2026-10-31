@@ -95,12 +95,12 @@ func (s *AcquireService) validateRequest(req *AcquireRequest) *domain.Error {
 		return domain.UnsupportedProfile(req.Profile)
 	}
 	for _, t := range req.Filters.Transports {
-		if t != domain.TransportHTTP {
+		if t != domain.TransportHTTP && t != domain.TransportSOCKS5 {
 			return domain.UnsupportedTransport(string(t))
 		}
 	}
 	if len(req.Filters.Transports) == 0 {
-		req.Filters.Transports = []domain.Transport{domain.TransportHTTP}
+		req.Filters.Transports = []domain.Transport{domain.TransportHTTP, domain.TransportSOCKS5}
 	}
 	for _, k := range req.Filters.ResourceKinds {
 		switch k {
@@ -381,6 +381,9 @@ func (s *AcquireService) processCandidate(ctx context.Context, run *acquireRun, 
 	}
 	_ = s.store.ReleaseReservation(ctx, res.ReservationID, s.Now())
 	run.recordFailure(fail.Kind)
+	if fail.Kind == validation.FailAuth {
+		_, _ = s.store.RetireResource(ctx, res.Candidate.Resource.ID, "AUTH_FAILED", s.Now())
+	}
 	if fail.Attributed() {
 		_ = s.health.Record(ctx, res.Candidate.Resource.ID, res.ContextKey, req.Profile, "FAIL")
 	}

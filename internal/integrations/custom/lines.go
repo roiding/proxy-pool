@@ -22,7 +22,8 @@ type LineError struct {
 }
 
 // ParseLines parses the lines_v1 custom import format:
-// [http://][user:pass@]host:port, one proxy per line, '#' comments allowed.
+// [http://|socks5://][user:pass@]host:port, one proxy per line, '#'
+// comments allowed.
 func ParseLines(opts LinesOptions, content string) ([]domain.NormalizedCandidate, []LineError) {
 	var out []domain.NormalizedCandidate
 	var errs []LineError
@@ -58,7 +59,7 @@ func parseLine(opts LinesOptions, line string) (domain.Connection, error) {
 		return domain.Connection{}, fmt.Errorf("parse URI: %w", err)
 	}
 	switch domain.Transport(u.Scheme) {
-	case domain.TransportHTTP:
+	case domain.TransportHTTP, domain.TransportSOCKS5:
 	default:
 		return domain.Connection{}, fmt.Errorf("unsupported transport %q", u.Scheme)
 	}
@@ -80,7 +81,7 @@ func parseLine(opts LinesOptions, line string) (domain.Connection, error) {
 			return domain.Connection{}, fmt.Errorf("address %s rejected by address policy", host)
 		}
 	}
-	conn := domain.Connection{Transport: domain.TransportHTTP, Host: host, Port: port}
+	conn := domain.Connection{Transport: domain.Transport(u.Scheme), Host: host, Port: port}
 	if u.User != nil {
 		conn.Username = u.User.Username()
 		conn.Password, _ = u.User.Password()
