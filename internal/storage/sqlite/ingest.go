@@ -109,9 +109,11 @@ func (s *Store) ImportCandidates(ctx context.Context, candidates []domain.Normal
 	return counts, err
 }
 
-// DeleteSource removes a channel entirely: its offers, tombstones, and source
-// row are dropped so a future re-upload rebuilds the pool from scratch.
-// Health rows of resources left without any supply are cleaned up too.
+// DeleteSource removes a channel entirely: its offers, tombstones, source
+// row, and any resources it was the last supplier of (with their leases,
+// reservations, and health rows) are deleted so a future re-upload rebuilds
+// the pool from scratch and inventory counts reflect live supply only.
+// Resources with an active lease are kept until the lease ends.
 func (s *Store) DeleteSource(ctx context.Context, sourceID string, now time.Time) (int, error) {
 	revoked := 0
 	err := s.tx(ctx, func(t *sql.Tx) error {
@@ -139,13 +141,48 @@ func (s *Store) DeleteSource(ctx context.Context, sourceID string, now time.Time
 			`DELETE FROM sources WHERE source_id = ?`, sourceID); err != nil {
 			return err
 		}
-		_, err = t.ExecContext(ctx, `
+		// Orphaned resources: no offer from any source left, and no active
+		// lease. Delete their history rows first to satisfy foreign keys,
+		// then the resource itself, then now-unreferenced credentials.
+		if _, err := t.ExecContext(ctx, `
+			DELETE FROM leases WHERE resource_id IN (
+			  SELECT r.resource_id FROM proxy_resources r
+			  WHERE NOT EXISTS (SELECT 1 FROM source_offers o WHERE o.resource_id = r.resource_id)
+			    AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.resource_id = r.resource_id AND l.state = 'ACTIVE')
+			)`); err != nil {
+			return err
+		}
+		if _, err := t.ExecContext(ctx, `
+			DELETE FROM reservations WHERE resource_id IN (
+			  SELECT r.resource_id FROM proxy_resources r
+			  WHERE NOT EXISTS (SELECT 1 FROM source_offers o WHERE o.resource_id = r.resource_id)
+			    AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.resource_id = r.resource_id AND l.state = 'ACTIVE')
+			)`); err != nil {
+			return err
+		}
+		if _, err := t.ExecContext(ctx, `
 			DELETE FROM scoped_health WHERE resource_id IN (
 			  SELECT r.resource_id FROM proxy_resources r
 			  WHERE NOT EXISTS (SELECT 1 FROM source_offers o WHERE o.resource_id = r.resource_id)
 			    AND NOT EXISTS (SELECT 1 FROM leases l WHERE l.resource_id = r.resource_id AND l.state = 'ACTIVE')
-			)`)
-		return err
+			)`); err != nil {
+			return err
+		}
+		if _, err := t.ExecContext(ctx, `
+			DELETE FROM proxy_resources
+			WHERE NOT EXISTS (SELECT 1 FROM source_offers o WHERE o.resource_id = proxy_resources.resource_id)
+			  AND NOT EXISTS (
+			    SELECT 1 FROM leases l
+			    WHERE l.resource_id = proxy_resources.resource_id AND l.state = 'ACTIVE')`); err != nil {
+			return err
+		}
+		if _, err := t.ExecContext(ctx, `
+			DELETE FROM proxy_credentials WHERE NOT EXISTS (
+			  SELECT 1 FROM proxy_resources r
+			  WHERE r.credential_version = proxy_credentials.credential_version)`); err != nil {
+			return err
+		}
+		return nil
 	})
 	return revoked, mapErr(err)
 }
@@ -243,8 +280,11 @@ func (s *Store) SelectPeriodicCandidates(ctx context.Context, f PeriodicFilters)
 	return out, mapErr(rows.Err())
 }
 
-// RetireResource revokes every enabled offer of a dead resource and plants a
-// tombstone so re-uploading the same list does not revive it.
+// RetireResource removes a dead resource entirely: every enabled offer is
+// tombstoned (so re-uploading the same list cannot revive it) and the
+// resource itself plus its offers, reservations, leases, and health rows are
+// deleted so inventory counts reflect live supply only. An active lease
+// (rare race) keeps the resource row so the lease stays resolvable.
 func (s *Store) RetireResource(ctx context.Context, resourceID, reason string, now time.Time) (int, error) {
 	revoked := 0
 	err := s.tx(ctx, func(t *sql.Tx) error {
@@ -270,11 +310,6 @@ func (s *Store) RetireResource(ctx context.Context, resourceID, reason string, n
 		}
 		for _, k := range offers {
 			if _, err := t.ExecContext(ctx, `
-				UPDATE source_offers SET state = 'REVOKED', updated_at = ? WHERE offer_id = ?`,
-				fmtTime(now), k.offerID); err != nil {
-				return err
-			}
-			if _, err := t.ExecContext(ctx, `
 				INSERT INTO eviction_tombstones(tombstone_id, resource_id, source_id, source_record_id,
 				  source_generation, reason, created_at)
 				VALUES(?,?,?,?,?,?,?)
@@ -284,6 +319,40 @@ func (s *Store) RetireResource(ctx context.Context, resourceID, reason string, n
 				return err
 			}
 			revoked++
+		}
+		if _, err := t.ExecContext(ctx,
+			`DELETE FROM source_offers WHERE resource_id = ?`, resourceID); err != nil {
+			return err
+		}
+		var active int
+		if err := t.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM leases WHERE resource_id = ? AND state = 'ACTIVE'`,
+			resourceID).Scan(&active); err != nil {
+			return err
+		}
+		if active == 0 {
+			if _, err := t.ExecContext(ctx,
+				`DELETE FROM leases WHERE resource_id = ?`, resourceID); err != nil {
+				return err
+			}
+			if _, err := t.ExecContext(ctx,
+				`DELETE FROM reservations WHERE resource_id = ?`, resourceID); err != nil {
+				return err
+			}
+			if _, err := t.ExecContext(ctx,
+				`DELETE FROM scoped_health WHERE resource_id = ?`, resourceID); err != nil {
+				return err
+			}
+			if _, err := t.ExecContext(ctx,
+				`DELETE FROM proxy_resources WHERE resource_id = ?`, resourceID); err != nil {
+				return err
+			}
+		}
+		if _, err := t.ExecContext(ctx, `
+			DELETE FROM proxy_credentials WHERE NOT EXISTS (
+			  SELECT 1 FROM proxy_resources r
+			  WHERE r.credential_version = proxy_credentials.credential_version)`); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -338,10 +407,15 @@ func (s *Store) DailySourceStats(ctx context.Context, from, to time.Time) ([]Dai
 		    WHERE va.completed_at >= ? AND va.completed_at < ?
 		  ) WHERE rn = 1
 		),
+		provenance AS (
+		  SELECT DISTINCT resource_id, source_id FROM source_offers
+		  UNION
+		  SELECT DISTINCT resource_id, source_id FROM eviction_tombstones
+		),
 		pairs AS (
-		  SELECT DISTINCT o.source_id, l.resource_id, l.outcome
+		  SELECT DISTINCT p.source_id, l.resource_id, l.outcome
 		  FROM latest l
-		  JOIN source_offers o ON o.resource_id = l.resource_id
+		  JOIN provenance p ON p.resource_id = l.resource_id
 		)
 		SELECT source_id, COUNT(*), SUM(outcome = 'PASS'), SUM(outcome = 'FAIL')
 		FROM pairs

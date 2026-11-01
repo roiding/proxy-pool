@@ -158,10 +158,16 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM reservations WHERE state IN ('RESERVED','VALIDATING')").Scan(&st.ActiveReservations); err != nil {
 		return st, mapErr(err)
 	}
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM scoped_health WHERE last_outcome = 'PASS'").Scan(&st.HealthPass); err != nil {
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM scoped_health h
+		JOIN proxy_resources r ON r.resource_id = h.resource_id
+		WHERE h.last_outcome = 'PASS'`).Scan(&st.HealthPass); err != nil {
 		return st, mapErr(err)
 	}
-	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM scoped_health WHERE last_outcome = 'FAIL'").Scan(&st.HealthFail); err != nil {
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM scoped_health h
+		JOIN proxy_resources r ON r.resource_id = h.resource_id
+		WHERE h.last_outcome = 'FAIL'`).Scan(&st.HealthFail); err != nil {
 		return st, mapErr(err)
 	}
 	return st, nil

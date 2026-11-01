@@ -594,7 +594,8 @@ func TestNightlyValidationRetiresDeadProxies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stats: %v", err)
 	}
-	if stats.HealthPass != 1 || stats.HealthFail != 1 || stats.EnabledOffers != 1 {
+	if stats.HealthPass != 1 || stats.HealthFail != 0 || stats.EnabledOffers != 1 ||
+		stats.Resources != 1 {
 		t.Fatalf("stats after retirement: %+v", stats)
 	}
 
@@ -686,6 +687,9 @@ func TestDeleteSourceViaAPI(t *testing.T) {
 	if stats.EnabledOffers != 0 {
 		t.Fatalf("offers survived deletion: %+v", stats)
 	}
+	if stats.Resources != 0 {
+		t.Fatalf("resources survived deletion: %+v", stats)
+	}
 	// Re-uploading after deletion rebuilds the channel from scratch.
 	e.importProxy(t, "manual", fmt.Sprintf("http://127.0.0.1:%d", portOf(proxy.URL)))
 	stats, err = e.store.Stats(context.Background())
@@ -734,7 +738,7 @@ func TestSocks5AuthFailureRetiresImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stats: %v", err)
 	}
-	if stats.EnabledOffers != 0 {
+	if stats.EnabledOffers != 0 || stats.Resources != 0 {
 		t.Fatalf("auth-failed socks5 offer not retired: %+v", stats)
 	}
 	// The same dead proxy must not be revived by re-upload.
@@ -1045,7 +1049,9 @@ func TestAuthRequiredProxyClassifiedAsAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stats: %v", err)
 	}
-	if stats.HealthFail != 1 {
-		t.Fatalf("407 must be attributed to the proxy credential: %+v", stats)
+	if stats.Resources != 0 || stats.EnabledOffers != 0 {
+		// Only an AUTH classification retires immediately; a PROXY
+		// classification would leave the resource in inventory on cooldown.
+		t.Fatalf("407 must retire the resource immediately: %+v", stats)
 	}
 }

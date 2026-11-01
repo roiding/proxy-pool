@@ -137,9 +137,10 @@ Implemented and covered by tests:
 - Nightly full validation for custom sources (`custom_nightly_validation_time`,
   default 03:00): authentication failures (e.g. proxy `407`, SOCKS5 auth
   rejection) retire the resource immediately; other attributed failures apply
-  cooldowns and revoke offers with tombstones once the consecutive-failure
-  threshold (`custom_nightly_retire_failures`, default 2) is reached. Evidence
-  never authorizes delivery.
+  cooldowns and remove the resource (tombstoned so re-uploads cannot revive
+  it) once the consecutive-failure threshold
+  (`custom_nightly_retire_failures`, default 2) is reached. Evidence never
+  authorizes delivery.
 - Embedded admin console at `/admin` with session login, `/v1/admin/sources`
   overview, `/v1/admin/daily` per-source success rates, and manual per-source
   validation via `POST /v1/sources/{id}/validate` with live progress at

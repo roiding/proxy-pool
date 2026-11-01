@@ -253,9 +253,8 @@ func (n *NightlyValidator) probeOne(ctx context.Context, runID string, cand doma
 	return nil
 }
 
-// retireFailed revokes offers of resources that reached the consecutive-failure
-// threshold. Resources stay in inventory for audit; tombstones prevent the same
-// uploaded list from reviving them.
+// retireFailed removes resources that reached the consecutive-failure
+// threshold. Tombstones prevent the same uploaded list from reviving them.
 func (n *NightlyValidator) retireFailed(ctx context.Context, sourceID string) int {
 	if n.retireFailures <= 0 {
 		return 0

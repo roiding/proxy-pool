@@ -517,8 +517,9 @@ Separate "not selected now", "temporarily excluded", and "removed permanently".
   a source-specific policy. Static/custom entries should be disabled or flagged
   for review rather than silently deleted.
 - Keep a tombstone keyed by resource, source item/generation, and reason so an
-  identical refresh cannot revive a retired resource every minute. A genuinely
-  new generation may restore an offer, but it does not erase connection health.
+  identical refresh cannot revive a retired resource every minute. Retired
+  custom resources are deleted outright (offers, health, lease history) with
+  only the tombstone retained.
 - Never let a raw downstream `success=true` report replace acquisition validation.
 - Feedback must name a lease and failure stage. Deduplicate reports, bound the
   reporting window, and weight client trust; one client must not be able to ban
@@ -533,8 +534,10 @@ pass pages through every eligible candidate (skipping leased and cooled-down
 resources), probes under the same profile, records attempts, and applies the
 same health and cooldown rules. Authentication failures are final evidence and
 retire the resource immediately; when a resource reaches
-`custom_nightly_retire_failures` consecutive attributed failures, its offers
-are revoked and tombstoned, so re-uploading the same list does not revive it.
+`custom_nightly_retire_failures` consecutive attributed failures, the resource
+is removed (offers, health, and lease history deleted) and tombstoned, so
+re-uploading the same list does not revive it and inventory counts reflect
+live supply only.
 Results only influence ranking/eligibility; an acquire still performs its own
 fresh validation (invariant 1). The pass is single-flight and runs inside the
 deployment-wide probe slots; provider-API sources are never swept.
