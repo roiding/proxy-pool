@@ -121,8 +121,8 @@ func (c Config) Validate() error {
 	if len(c.IdentitySecret) < 16 {
 		errs = append(errs, "identity_secret must be at least 16 characters")
 	}
-	if c.AdminPassword != "" && len(c.AdminPassword) < 16 {
-		errs = append(errs, "admin_password must be at least 16 characters when set")
+	if c.AdminPassword != "" && len(c.AdminPassword) < 6 {
+		errs = append(errs, "admin_password must be at least 6 characters when set")
 	}
 	if c.JudgeURL == "" {
 		errs = append(errs, "judge_url is required")
