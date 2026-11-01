@@ -196,7 +196,10 @@ func (s *AcquireService) Acquire(ctx context.Context, req AcquireRequest) (Acqui
 	run := &acquireRun{
 		maxAttempts: maxCandidateAttempts(req.Count, s.cfg.MaxCandidateAttempts),
 	}
-	candidates := make(chan domain.Candidate, s.cfg.CandidatePage)
+	// Buffered to the attempt budget so the feeder never blocks on a full
+	// queue after the workers have stopped consuming (that stall used to
+	// hold successful batches until the request deadline).
+	candidates := make(chan domain.Candidate, run.maxAttempts)
 	var workers sync.WaitGroup
 	workerCount := s.cfg.ParallelPerRequest
 	if workerCount > req.Count {
@@ -275,6 +278,7 @@ type acquireRun struct {
 	attributed   int
 	sawCandidate atomic.Bool
 	sawCooling   atomic.Bool
+	countrySkip  atomic.Int32
 	refilled     bool
 }
 
@@ -311,6 +315,7 @@ func (r *acquireRun) zeroShortfall() *domain.Error {
 	inconclusive, attributed := r.inconclusive, r.attributed
 	r.mu.Unlock()
 	sawAny := r.sawCandidate.Load()
+	countrySkipped := r.countrySkip.Load()
 	if !sawAny {
 		if r.sawCooling.Load() {
 			return domain.NoEligibleCandidates("all enabled sources are cooling down after repeated failures")
@@ -319,6 +324,10 @@ func (r *acquireRun) zeroShortfall() *domain.Error {
 	}
 	if reasonFor(inconclusive, attributed) == "VALIDATION_INFRA_UNAVAILABLE" {
 		return domain.ValidationInfra("all probes inconclusive")
+	}
+	if attributed == 0 && countrySkipped > 0 {
+		return domain.InsufficientValidated(
+			fmt.Sprintf("%d candidate(s) passed validation but did not match the country filter", countrySkipped))
 	}
 	return domain.InsufficientValidated(
 		fmt.Sprintf("no candidate passed validation (%s)", reasonFor(inconclusive, attributed)))
@@ -372,6 +381,9 @@ feed:
 			return
 		}
 		for _, c := range cands {
+			if int(run.attempts.Load()) >= run.maxAttempts {
+				break
+			}
 			if _, loaded := run.tried.LoadOrStore(c.Resource.ID, struct{}{}); loaded {
 				continue
 			}
@@ -478,9 +490,19 @@ func (s *AcquireService) processCandidate(ctx context.Context, run *acquireRun, 
 	if fail == nil {
 		obs := recordObservation(ctx, s.store, s.geo, res.Candidate.Resource.ID, ev, s.Now())
 		s.recordSourceOutcome(ctx, res.Candidate.Offer.SourceID, "PASS")
+		if !countryMatches(req.Filters.Countries, obs) {
+			// A wrong/unverifiable exit country is not a proxy failure:
+			// release the slot and try another candidate.
+			_ = s.store.ReleaseReservation(ctx, res.ReservationID, s.Now())
+			run.countrySkip.Add(1)
+			return
+		}
 		item, cerr := s.commitLease(ctx, res, ev, req, requestID)
 		if cerr == nil {
 			item.Observed = obs
+			// A successful delivery is a fresh PASS: refresh scoped health
+			// so ranking and retirement see the same evidence acquire saw.
+			_ = s.health.Record(ctx, res.Candidate.Resource.ID, res.ContextKey, req.Profile, "PASS")
 			run.delivered.Add(1)
 			run.mu.Lock()
 			run.leases = append(run.leases, item)
@@ -521,16 +543,29 @@ func normalizeCountries(in []string) []string {
 
 func recordAttempt(ctx context.Context, store *sqlite.Store, ev domain.Evidence, res sqlite.Reserved, fail *validation.Failure) *domain.Error {
 	detail := ""
-	outcome := ev.Outcome
 	if fail != nil {
-		outcome = "FAIL"
+		ev.Outcome = "FAIL"
 		detail = fail.Kind + ": " + fail.Detail
 	}
 	if err := store.RecordAttempt(ctx, ev, res.Candidate.Resource.ID, res.ContextKey, detail); err != nil {
 		return domain.StoreUnavailable(err)
 	}
-	_ = outcome
 	return nil
+}
+
+func countryMatches(filters []string, obs *domain.Observation) bool {
+	if len(filters) == 0 {
+		return true
+	}
+	if obs == nil || obs.CountryCode == "" {
+		return false
+	}
+	for _, c := range filters {
+		if strings.EqualFold(c, obs.CountryCode) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *AcquireService) commitLease(ctx context.Context, res sqlite.Reserved, ev domain.Evidence, req AcquireRequest, requestID string) (AcquiredItem, error) {

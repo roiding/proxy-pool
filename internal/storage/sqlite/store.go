@@ -66,7 +66,12 @@ func New(db *sql.DB) *Store { return &Store{db: db} }
 
 func (s *Store) Close() error { return s.db.Close() }
 
-func fmtTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+// fmtTime uses a fixed-width fraction so lexicographic TEXT comparison in
+// SQLite matches chronological order; RFC3339Nano trims trailing zeros and
+// breaks ordering across the same second.
+func fmtTime(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05.000000000Z07:00")
+}
 
 func nullTime(t *time.Time) any {
 	if t == nil {

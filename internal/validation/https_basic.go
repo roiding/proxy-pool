@@ -72,8 +72,11 @@ func JudgeSignature(secret, nonce, exitIP string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-func addrGuard(allowPrivate bool) func(ctx context.Context, network, address string, conn syscall.RawConn) error {
-	return func(ctx context.Context, network, address string, _ syscall.RawConn) error {
+// addrGuard rejects dial targets whose resolved address is private. It is
+// attached as net.Dialer.Control so hostname proxies cannot bypass the
+// allow_private_addresses policy through DNS resolution.
+func addrGuard(allowPrivate bool) func(network, address string, conn syscall.RawConn) error {
+	return func(_ string, address string, _ syscall.RawConn) error {
 		host, _, err := net.SplitHostPort(address)
 		if err != nil {
 			return fmt.Errorf("bad dial address %q: %w", address, err)
@@ -187,7 +190,7 @@ func ProbeHTTPSBasic(ctx context.Context, conn domain.Connection, judgeURL strin
 // candidate proxy: HTTP proxies are dialed with CONNECT, SOCKS5 proxies speak
 // RFC 1928 with optional username/password auth.
 func probeTransport(conn domain.Connection, limits Limits) (*http.Transport, *Failure) {
-	dialer := &net.Dialer{Timeout: limits.DialTimeout}
+	dialer := &net.Dialer{Timeout: limits.DialTimeout, Control: addrGuard(limits.AllowPrivate)}
 	t := &http.Transport{
 		TLSClientConfig:       &tls.Config{RootCAs: limits.RootCAs, MinVersion: tls.VersionTLS12},
 		TLSHandshakeTimeout:   limits.DialTimeout,

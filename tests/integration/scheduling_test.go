@@ -348,7 +348,7 @@ func TestGeoObservationAndCountryFilter(t *testing.T) {
 		obs.City != "深圳市" {
 		t.Fatalf("observation: %+v", obs)
 	}
-	if _, derr := e.leases.Release(context.Background(), acquired.Items[0].LeaseID); derr != nil {
+	if _, derr := e.leases.Release(context.Background(), acquired.Items[0].LeaseID, "master", true); derr != nil {
 		t.Fatalf("release: %v", derr)
 	}
 

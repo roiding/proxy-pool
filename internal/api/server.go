@@ -180,7 +180,8 @@ func (s *Server) handleAcquire(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
-	ok, derr := s.leases.Release(r.Context(), r.PathValue("id"))
+	ident := identityFrom(r.Context())
+	ok, derr := s.leases.Release(r.Context(), r.PathValue("id"), ident.ConsumerID, ident.Admin)
 	if derr != nil {
 		writeError(w, derr)
 		return
@@ -199,7 +200,9 @@ func (s *Server) handleFeedback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, domain.InvalidRequest("invalid JSON body: %v", err))
 		return
 	}
-	if derr := s.leases.Feedback(r.Context(), r.PathValue("id"), body.Outcome, body.Stage, body.Note); derr != nil {
+	ident := identityFrom(r.Context())
+	if derr := s.leases.Feedback(r.Context(), r.PathValue("id"), body.Outcome, body.Stage, body.Note,
+		ident.ConsumerID, ident.Admin); derr != nil {
 		writeError(w, derr)
 		return
 	}

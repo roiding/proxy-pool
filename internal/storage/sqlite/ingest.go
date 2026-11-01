@@ -593,7 +593,10 @@ func (s *Store) SelectCandidates(ctx context.Context, f SelectionFilters) ([]dom
 		}
 	}
 	if len(f.Countries) > 0 {
-		query += " AND ro.country_code IN (" + placeholders(len(f.Countries)) + ")"
+		// Unobserved candidates stay eligible so a country filter can be
+		// satisfied by probing; the fresh observation is re-checked before
+		// delivery.
+		query += " AND (ro.country_code IN (" + placeholders(len(f.Countries)) + ") OR ro.resource_id IS NULL)"
 		for _, v := range f.Countries {
 			args = append(args, strings.ToUpper(v))
 		}

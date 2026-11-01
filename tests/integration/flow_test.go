@@ -252,10 +252,10 @@ func TestExclusiveLeaseBlocksAndReleaseUnblocks(t *testing.T) {
 	if derr == nil || derr.Code != "NO_ELIGIBLE_CANDIDATES" {
 		t.Fatalf("second acquire error = %v, want NO_ELIGIBLE_CANDIDATES", derr)
 	}
-	if ok, derr := e.leases.Release(context.Background(), first.Items[0].LeaseID); derr != nil || !ok {
+	if ok, derr := e.leases.Release(context.Background(), first.Items[0].LeaseID, "master", true); derr != nil || !ok {
 		t.Fatalf("release: ok=%v err=%v", ok, derr)
 	}
-	if ok, derr := e.leases.Release(context.Background(), first.Items[0].LeaseID); derr != nil || ok {
+	if ok, derr := e.leases.Release(context.Background(), first.Items[0].LeaseID, "master", true); derr != nil || ok {
 		t.Fatalf("idempotent release: ok=%v err=%v", ok, derr)
 	}
 	second, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
@@ -1018,7 +1018,7 @@ func TestBuiltInJudgeSignedHTTP(t *testing.T) {
 
 	// A probe configured with the wrong judge secret must fail as suspected
 	// interception instead of trusting an unverifiable response.
-	if _, derr := e.leases.Release(context.Background(), result.Items[0].LeaseID); derr != nil {
+	if _, derr := e.leases.Release(context.Background(), result.Items[0].LeaseID, "master", true); derr != nil {
 		t.Fatalf("release for wrong-secret case: %v", derr)
 	}
 	cfgWrong := cfg
