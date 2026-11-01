@@ -67,6 +67,15 @@
   #result { white-space: pre-wrap; word-break: break-all; max-height: 180px; overflow: auto;
     background: #0c1014; border: 1px solid var(--panel-edge); border-radius: 4px;
     padding: 10px; margin-top: 12px; font-size: 12px; color: var(--ink-dim); }
+  #sitesCatalog { max-height: 320px; overflow: auto; }
+  .site-row { display: flex; align-items: center; gap: 10px; padding: 6px 0;
+    border-bottom: 1px solid var(--panel-edge); }
+  .site-row:last-child { border-bottom: none; }
+  .site-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .badge { display: inline-block; padding: 0 8px; border: 1px solid var(--panel-edge);
+    border-radius: 10px; font-size: 11px; color: var(--ink-dim); }
+  .badge.elite { color: var(--accent); border-color: var(--accent); }
+  .badge.anon { color: var(--warn); border-color: var(--warn); }
   #login {
     position: fixed; inset: 0; background: rgba(8,10,13,.86); display: flex;
     align-items: center; justify-content: center;
@@ -128,6 +137,14 @@
       <input type="text" id="apiCountry" placeholder="留空 = 不限" spellcheck="false">
       <button class="primary" id="apiCreateBtn">创建渠道并立即拉取</button>
       <div id="apiResult" class="flash muted">API 渠道由「拉取」按钮补充供给；下发获取仍会实时验活。</div>
+    </div>
+    <div class="card">
+      <h2>免费站点源（site_fetch）</h2>
+      <p class="muted" style="font-size:12px;margin:0 0 10px">
+        内置免费代理站点目录，一键创建渠道并抓取进池子，之后走统一的验活与清理。同一站点重复抓取有 15 秒间隔保护。
+      </p>
+      <div id="sitesCatalog" class="muted">加载中…</div>
+      <div id="siteResult" class="flash muted">点击站点右侧按钮创建渠道并完成首次抓取。</div>
     </div>
     <div class="card">
       <h2>预热验活（按目标数量）</h2>
@@ -278,16 +295,18 @@ $("importBtn").onclick = async () => {
 
 async function refresh() {
   try {
-    const [statsR, sourcesR, dailyR, valR, prewarmR, keysR] = await Promise.all([
+    const [statsR, sourcesR, dailyR, valR, prewarmR, keysR, sitesR] = await Promise.all([
       authFetch("/v1/admin/stats"), authFetch("/v1/admin/sources"),
       authFetch("/v1/admin/daily"), authFetch("/v1/admin/validation"),
-      authFetch("/v1/admin/prewarm"), authFetch("/v1/admin/keys")]);
+      authFetch("/v1/admin/prewarm"), authFetch("/v1/admin/keys"),
+      authFetch("/v1/admin/sites")]);
     const stats = await statsR.json();
     const sources = await sourcesR.json();
     const daily = await dailyR.json();
     const val = await valR.json();
     const prewarm = await prewarmR.json();
     const keys = await keysR.json();
+    const sitesCatalog = await sitesR.json();
     pollDelay = (val.running || prewarm.running) ? 3000 : 15000;
     $("whoami").textContent = "已登录";
     const items = [
@@ -328,8 +347,10 @@ async function refresh() {
             new Date(s.source_cooldown_until).toLocaleTimeString() + '</span>' : "")
         : '<span class="ok">正常</span>';
       const isApi = s.adapter_type === "provider_api";
-      const typeBadge = isApi ? '<span class="warn">API</span>' : "自建";
-      const primaryBtn = isApi
+      const isSite = s.adapter_type === "site_fetch";
+      const typeBadge = isApi ? '<span class="warn">API</span>'
+        : (isSite ? '<span class="ok">站点</span>' : "自建");
+      const primaryBtn = (isApi || isSite)
         ? "<button class='fetchBtn' data-src='" + s.source_id + "'>拉取</button>"
         : "<button class='validateBtn' data-src='" + s.source_id + "'" +
           (val.running ? " disabled" : "") + ">验活</button>";
@@ -340,6 +361,19 @@ async function refresh() {
         "</td><td>" + primaryBtn + " " +
         "<button class='deleteBtn' data-src='" + s.source_id + "'>删除</button></td></tr>";
     }).join("") : '<tr><td colspan="8" class="muted">还没有渠道，先在左侧导入</td></tr>';
+    const existing = new Map(sources.map((s) => [s.source_id, s.adapter_type]));
+    const anonLabels = { elite: "高匿", anonymous: "匿名", transparent: "透明", unknown: "未知" };
+    const anonClasses = { elite: "elite", anonymous: "anon", transparent: "", unknown: "" };
+    $("sitesCatalog").innerHTML = sitesCatalog.length ? sitesCatalog.map((st) => {
+      const anon = anonLabels[st.anonymity] || st.anonymity;
+      const anonCls = anonClasses[st.anonymity] || "";
+      const action = existing.has(st.site_id)
+        ? "<button class='fetchBtn' data-src='" + st.site_id + "'>拉取</button>"
+        : "<button class='siteCreateBtn' data-id='" + st.site_id + "'>创建并拉取</button>";
+      return "<div class='site-row'><div class='grow'><b>" + st.name + "</b> " +
+        "<span class='badge " + anonCls + "'>" + anon + "</span> " +
+        "<span class='muted'>" + st.site_id + "</span></div>" + action + "</div>";
+    }).join("") : '<span class="muted">站点目录为空</span>';
     $("daily").innerHTML = daily.length ? daily.map((d) => {
       const rate = (d.pass_rate * 100).toFixed(1) + "%";
       const cls = d.pass_rate >= 0.8 ? "ok" : (d.pass_rate >= 0.5 ? "warn" : "bad");
@@ -418,6 +452,31 @@ function fetchSource(id) {
       refresh();
     })
     .catch(() => {});
+}
+async function createSiteSource(id) {
+  const box = $("siteResult");
+  box.textContent = "正在创建渠道 " + id + " 并抓取…";
+  box.className = "flash";
+  try {
+    const create = await authFetch("/v1/sources", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_id: id, adapter_type: "site_fetch", site_id: id, max_pool_leases: 1 }),
+    });
+    if (!create.ok) { throw new Error(await create.text()); }
+    const fetched = await authFetch("/v1/sources/" + encodeURIComponent(id) + "/fetch", { method: "POST" });
+    const data = await fetched.json();
+    if (!fetched.ok) { throw new Error(JSON.stringify(data)); }
+    box.textContent = "渠道 " + id + " 首次抓取完成：新增 " + data.added + "，更新 " + data.updated +
+      "，跳过 " + data.skipped + (data.rejected && data.rejected.length ? "，拒绝 " + data.rejected.length : "") +
+      "（页数 " + (data.pages_done || 0) + "/" + (data.pages_total || 0) + "）";
+    box.className = "flash good";
+    refresh();
+  } catch (err) {
+    if (err.message !== "unauthorized") {
+      box.textContent = "操作失败：" + err.message;
+      box.className = "flash err";
+    }
+  }
 }
 $("apiCreateBtn").onclick = async () => {
   const src = $("apiSourceId").value.trim();
@@ -508,6 +567,8 @@ document.addEventListener("click", (e) => {
   if (btn && !btn.disabled) { validateSource(btn.dataset.src); }
   const fbtn = e.target.closest(".fetchBtn");
   if (fbtn) { fetchSource(fbtn.dataset.src); }
+  const sc = e.target.closest(".siteCreateBtn");
+  if (sc) { createSiteSource(sc.dataset.id); }
   const del = e.target.closest(".deleteBtn");
   if (del) { deleteSource(del.dataset.src); }
   const kt = e.target.closest(".keyToggleBtn");

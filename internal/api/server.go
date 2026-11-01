@@ -12,6 +12,7 @@ import (
 	"proxypool/internal/application"
 	"proxypool/internal/config"
 	"proxypool/internal/domain"
+	"proxypool/internal/integrations/sites"
 	"proxypool/internal/storage/sqlite"
 )
 
@@ -46,6 +47,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/login", s.handleLogin)
 	mux.HandleFunc("POST /admin/logout", s.handleLogout)
 	mux.HandleFunc("GET /v1/admin/sources", s.handleSourcesOverview)
+	mux.HandleFunc("GET /v1/admin/sites", s.handleSitesCatalog)
 	mux.HandleFunc("GET /v1/admin/keys", s.handleListKeys)
 	mux.HandleFunc("POST /v1/admin/keys", s.handleCreateKey)
 	mux.HandleFunc("PATCH /v1/admin/keys/{id}", s.handleUpdateKey)
@@ -218,6 +220,8 @@ func (s *Server) handleCreateSource(w http.ResponseWriter, r *http.Request) {
 		CountryCode        string `json:"country_code"`
 		FetchCount         int    `json:"fetch_count"`
 		MinFetchIntervalMS int64  `json:"min_fetch_interval_ms"`
+		SiteID             string `json:"site_id"`
+		MaxPages           int    `json:"max_pages"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, domain.InvalidRequest("invalid JSON body: %v", err))
@@ -246,9 +250,17 @@ func (s *Server) handleCreateSource(w http.ResponseWriter, r *http.Request) {
 			writeError(w, domain.InvalidRequest("protocol belongs to provider_api channels; set adapter_type %q", application.AdapterProvider))
 			return
 		}
+		if body.SiteID != "" {
+			writeError(w, domain.InvalidRequest("site_id belongs to site_fetch channels; set adapter_type %q", application.AdapterSite))
+			return
+		}
 	case application.AdapterProvider:
 		if body.ParserType != "" && body.ParserType != application.ParserJSONMapping {
 			writeError(w, domain.InvalidRequest("parser_type %q is not supported for provider_api; use json_mapping_v1", body.ParserType))
+			return
+		}
+		if body.SiteID != "" || body.MaxPages != 0 {
+			writeError(w, domain.InvalidRequest("site_id/max_pages belong to site_fetch channels; set adapter_type %q", application.AdapterSite))
 			return
 		}
 		cfg.Provider = &application.ProviderConfig{
@@ -257,8 +269,22 @@ func (s *Server) handleCreateSource(w http.ResponseWriter, r *http.Request) {
 			FetchCount:         body.FetchCount,
 			MinFetchIntervalMS: body.MinFetchIntervalMS,
 		}
+	case application.AdapterSite:
+		if body.ParserType != "" && body.ParserType != application.ParserSite {
+			writeError(w, domain.InvalidRequest("parser_type %q is not supported for site_fetch; use site_v1", body.ParserType))
+			return
+		}
+		if body.SiteID == "" {
+			writeError(w, domain.InvalidRequest("site_id is required for site_fetch channels"))
+			return
+		}
+		if body.Protocol != "" || body.CountryCode != "" || body.FetchCount != 0 {
+			writeError(w, domain.InvalidRequest("protocol/country_code/fetch_count belong to provider_api channels"))
+			return
+		}
+		cfg.Site = &application.SiteConfig{SiteID: body.SiteID, MaxPages: body.MaxPages}
 	default:
-		writeError(w, domain.InvalidRequest("adapter_type %q is not supported; use custom or provider_api", body.AdapterType))
+		writeError(w, domain.InvalidRequest("adapter_type %q is not supported; use custom, provider_api, or site_fetch", body.AdapterType))
 		return
 	}
 	if err := s.ingest.EnsureSource(r.Context(), body.SourceID, cfg, enabled); err != nil {
@@ -267,6 +293,31 @@ func (s *Server) handleCreateSource(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"source_id": body.SourceID, "adapter_type": adapterType, "status": "created"})
+}
+
+func (s *Server) handleSitesCatalog(w http.ResponseWriter, _ *http.Request) {
+	type catalogSite struct {
+		SiteID    string `json:"site_id"`
+		Name      string `json:"name"`
+		Anonymity string `json:"anonymity"`
+		Parser    string `json:"parser"`
+		Pages     int    `json:"pages"`
+		AutoPages bool   `json:"auto_pages"`
+		Note      string `json:"note"`
+	}
+	out := make([]catalogSite, 0, len(sites.Catalog))
+	for _, site := range sites.Catalog {
+		out = append(out, catalogSite{
+			SiteID:    site.ID,
+			Name:      site.Name,
+			Anonymity: string(site.Anonymity),
+			Parser:    string(site.Kind),
+			Pages:     site.Pages,
+			AutoPages: site.AutoPages,
+			Note:      site.Note,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleFetchSource(w http.ResponseWriter, r *http.Request) {

@@ -100,6 +100,45 @@ Semantics and limits:
   `custom_nightly_retire_failures` threshold, and re-fetching a tombstoned
   proxy cannot revive it.
 
+### Free Site Channels
+
+`site_fetch` channels import curated free-proxy list pages into the normal
+pool. The catalog (`internal/integrations/sites`) defines one entry per site
+with a code-owned parser (HTML tables, aria-role cell tables, embedded
+`fpsList` JSON, `data.list` JSON, or `ip:port` text). Each fetch walks a
+bounded number of pages (max 20, per-page body cap 512 KiB, per-page
+delay, stop after three empty pages) and imports additively like a custom
+upload, so nightly validation and acquire evidence keep quality honest.
+
+Create a channel from the console's 免费站点源 card or via API:
+
+```sh
+curl -X POST http://127.0.0.1:8080/v1/sources -H "Authorization: Bearer $TOKEN" \
+  -d '{"source_id":"lumiproxy-elite","adapter_type":"site_fetch","site_id":"lumiproxy-elite","max_pool_leases":1}'
+curl -X POST http://127.0.0.1:8080/v1/sources/lumiproxy-elite/fetch -H "Authorization: Bearer $TOKEN"
+```
+
+`GET /v1/admin/sites` returns the catalog. Every channel was verified live
+from the Singapore deployment on 2026-11-01 with
+`go run ./cmd/sitecheck -max-pages 1` (rerun it to re-check; `-json` prints
+machine-readable results):
+
+| Channel | Parser | First-page entries |
+| --- | --- | --- |
+| `ip3366-normal` 云代理(普通) | table_2col | 15 |
+| `ip89` 89免费代理 | text | ~3000 |
+| `jiliuip-elite` 积流代理(高匿) | role_cells | 9 |
+| `qiyunip-elite` 齐云代理(高匿) | table_th | 15 |
+| `lumiproxy-transparent/anon/elite` | json_list | 24 each |
+| `proxyscrape-anon/elite` | text | 752 / 355 |
+| `openproxylist-http/https` | text | ~6400 / ~5100 |
+
+Sources that no longer work (checked the same day) are excluded instead of
+shipped dead: kuaidaili (JS anti-bot challenge), kxdaili (TLS handshake
+failure), ip3366 elite route (HTTP 521), 911Proxy/ProxyLite/ProxyShare free
+list APIs (404), FineProxy (404). The reference implementation for several
+parsers is [fog-forest/free-proxy-pool](https://github.com/fog-forest/free-proxy-pool) (MIT).
+
 ## Dynamic Scheduling
 
 The pool does not treat every source as equally healthy. Three mechanisms
