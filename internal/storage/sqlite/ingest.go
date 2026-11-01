@@ -30,6 +30,18 @@ func (s *Store) ImportCandidates(ctx context.Context, candidates []domain.Normal
 				counts.Skipped++
 				continue
 			}
+			var tombstoned int
+			if err := t.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM eviction_tombstones
+				WHERE resource_id = ? AND source_id = ? AND source_record_id = ?
+				  AND source_generation = ?`,
+				c.ResourceID, c.SourceID, c.RecordID, c.Generation).Scan(&tombstoned); err != nil {
+				return err
+			}
+			if tombstoned > 0 {
+				counts.Skipped++
+				continue
+			}
 			if c.CredentialVersion != "" {
 				if _, err := t.ExecContext(ctx, `
 					INSERT INTO proxy_credentials(credential_version, username, password, created_at)
@@ -46,18 +58,6 @@ func (s *Store) ImportCandidates(ctx context.Context, candidates []domain.Normal
 				c.ResourceID, "default", string(c.Conn.Transport), c.Conn.Host, c.Conn.Port,
 				c.CredentialVersion, string(c.Session), string(c.Kind), fmtTime(now), fmtTime(now)); err != nil {
 				return err
-			}
-			var tombstoned int
-			if err := t.QueryRowContext(ctx, `
-				SELECT COUNT(*) FROM eviction_tombstones
-				WHERE resource_id = ? AND source_id = ? AND source_record_id = ?
-				  AND source_generation = ?`,
-				c.ResourceID, c.SourceID, c.RecordID, c.Generation).Scan(&tombstoned); err != nil {
-				return err
-			}
-			if tombstoned > 0 {
-				counts.Skipped++
-				continue
 			}
 			var exists int
 			if err := t.QueryRowContext(ctx, `
@@ -212,6 +212,7 @@ func (s *Store) SelectPeriodicCandidates(ctx context.Context, f PeriodicFilters)
 		FROM source_offers o
 		JOIN proxy_resources r ON r.resource_id = o.resource_id AND r.disabled = 0
 		JOIN sources src ON src.source_id = o.source_id AND src.enabled = 1 AND src.adapter_type = 'custom'
+		LEFT JOIN source_circuits sc ON sc.source_id = o.source_id
 		LEFT JOIN proxy_credentials cr ON cr.credential_version = r.credential_version
 		LEFT JOIN scoped_health h
 		  ON h.resource_id = r.resource_id
@@ -221,10 +222,11 @@ func (s *Store) SelectPeriodicCandidates(ctx context.Context, f PeriodicFilters)
 		  AND (o.provider_expires_at IS NULL OR o.provider_expires_at > ?)
 		  AND (o.local_retention_deadline IS NULL OR o.local_retention_deadline > ?)
 		  AND (h.cooldown_until IS NULL OR h.cooldown_until <= ?)
+		  AND (sc.cooldown_until IS NULL OR sc.cooldown_until <= ?)
 		  AND NOT EXISTS (
 		        SELECT 1 FROM leases l
 		        WHERE l.resource_id = r.resource_id AND l.state = 'ACTIVE')`
-	args := []any{f.Profile, fmtTime(f.Now), fmtTime(f.Now), fmtTime(f.Now)}
+	args := []any{f.Profile, fmtTime(f.Now), fmtTime(f.Now), fmtTime(f.Now), fmtTime(f.Now)}
 	if f.SourceID != "" {
 		query += " AND o.source_id = ?"
 		args = append(args, f.SourceID)
@@ -367,16 +369,17 @@ type DailyStat struct {
 	PassRate float64 `json:"pass_rate"`
 }
 
-// RetireCandidates lists custom-source resources whose scoped consecutive
-// failure count reached the threshold.
-func (s *Store) RetireCandidates(ctx context.Context, threshold int, sourceID string) ([]string, error) {
+// RetireCandidates lists resources of the given adapter type whose scoped
+// consecutive failure count reached the threshold. Custom sources reach it
+// via nightly probes; provider sources via request-time acquire attempts.
+func (s *Store) RetireCandidates(ctx context.Context, threshold int, adapterType, sourceID string) ([]string, error) {
 	query := `
 		SELECT DISTINCT so.resource_id
 		FROM scoped_health h
 		JOIN source_offers so ON so.resource_id = h.resource_id AND so.state = 'ENABLED'
-		JOIN sources src ON src.source_id = so.source_id AND src.adapter_type = 'custom'
+		JOIN sources src ON src.source_id = so.source_id AND src.adapter_type = ?
 		WHERE h.consecutive_failures >= ?`
-	args := []any{threshold}
+	args := []any{adapterType, threshold}
 	if sourceID != "" {
 		query += " AND so.source_id = ?"
 		args = append(args, sourceID)
@@ -441,6 +444,7 @@ func (s *Store) DailySourceStats(ctx context.Context, from, to time.Time) ([]Dai
 
 type SourceOverview struct {
 	SourceID      string  `json:"source_id"`
+	AdapterType   string  `json:"adapter_type"`
 	ParserType    string  `json:"parser_type"`
 	Enabled       bool    `json:"enabled"`
 	Offers        int64   `json:"offers"`
@@ -448,15 +452,18 @@ type SourceOverview struct {
 	HealthPass    int64   `json:"health_pass"`
 	HealthFail    int64   `json:"health_fail"`
 	LastValidated *string `json:"last_validated_at"`
+	CircuitState  string  `json:"circuit_state"`
+	CooldownUntil *string `json:"source_cooldown_until"`
 }
 
 func (s *Store) SourcesOverview(ctx context.Context) ([]SourceOverview, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT s.source_id, s.parser_type, s.enabled,
+		SELECT s.source_id, s.adapter_type, s.parser_type, s.enabled,
 		       COALESCE(o.offers, 0), COALESCE(o.enabled_offers, 0),
 		       COALESCE(h.health_pass, 0), COALESCE(h.health_fail, 0),
-		       va.last_validated
+		       va.last_validated, COALESCE(sc.state, 'CLOSED'), sc.cooldown_until
 		FROM sources s
+		LEFT JOIN source_circuits sc ON sc.source_id = s.source_id
 		LEFT JOIN (
 		  SELECT source_id, COUNT(*) AS offers, SUM(state = 'ENABLED') AS enabled_offers
 		  FROM source_offers GROUP BY source_id
@@ -485,9 +492,9 @@ func (s *Store) SourcesOverview(ctx context.Context) ([]SourceOverview, error) {
 	for rows.Next() {
 		var o SourceOverview
 		var enabled int
-		var lastValidated any
-		if err := rows.Scan(&o.SourceID, &o.ParserType, &enabled, &o.Offers, &o.EnabledOffers,
-			&o.HealthPass, &o.HealthFail, &lastValidated); err != nil {
+		var lastValidated, cooldown any
+		if err := rows.Scan(&o.SourceID, &o.AdapterType, &o.ParserType, &enabled, &o.Offers, &o.EnabledOffers,
+			&o.HealthPass, &o.HealthFail, &lastValidated, &o.CircuitState, &cooldown); err != nil {
 			return nil, mapErr(err)
 		}
 		o.Enabled = enabled == 1
@@ -496,40 +503,54 @@ func (s *Store) SourcesOverview(ctx context.Context) ([]SourceOverview, error) {
 				o.LastValidated = &v
 			}
 		}
+		if cooldown != nil {
+			if v, ok := cooldown.(string); ok {
+				o.CooldownUntil = &v
+			}
+		}
 		out = append(out, o)
 	}
 	return out, mapErr(rows.Err())
 }
 
 type SelectionFilters struct {
-	Profile      string
-	Now          time.Time
-	UsefulCutoff time.Time
-	Transports   []domain.Transport
-	Kinds        []domain.ResourceKind
-	SourceIDs    []string
-	ExcludeByIDs []string
-	Limit        int
+	Profile          string
+	Now              time.Time
+	UsefulCutoff     time.Time
+	Transports       []domain.Transport
+	Kinds            []domain.ResourceKind
+	SourceIDs        []string
+	Countries        []string
+	ExcludeByIDs     []string
+	ConsumerID       string
+	ConsumerCooldown time.Duration
+	Limit            int
 }
 
 // SelectCandidates returns eligible, unthrottled candidates ordered so that
 // recently passing, then untested, then failing resources are tried first.
+// Sources with an active circuit cooldown are excluded; sources whose
+// cooldown has elapsed are ranked last so they act as half-open trials.
 func (s *Store) SelectCandidates(ctx context.Context, f SelectionFilters) ([]domain.Candidate, error) {
 	if f.Limit <= 0 {
 		f.Limit = 8
 	}
-	args := []any{f.Profile, fmtTime(f.UsefulCutoff), fmtTime(f.UsefulCutoff), fmtTime(f.Now), fmtTime(f.Now), fmtTime(f.Now)}
+	args := []any{f.Profile, fmtTime(f.UsefulCutoff), fmtTime(f.UsefulCutoff),
+		fmtTime(f.Now), fmtTime(f.Now), fmtTime(f.Now), fmtTime(f.Now)}
 	query := `
 		SELECT o.offer_id, o.source_id, o.resource_id, o.source_record_id, o.source_generation,
 		       o.provider_expires_at, o.local_retention_deadline, o.expiry_basis, o.claims_json,
 		       o.max_pool_leases, o.capacity_group, o.state,
 		       r.transport, r.host, r.port, r.credential_version, r.session_policy, r.resource_kind,
 		       COALESCE(cr.username, ''), COALESCE(cr.password, ''),
-		       COALESCE(h.last_outcome, 'UNKNOWN'), h.last_pass_at, COALESCE(h.consecutive_failures, 0)
+		       COALESCE(h.last_outcome, 'UNKNOWN'), h.last_pass_at, COALESCE(h.consecutive_failures, 0),
+		       ro.exit_ip, ro.country_code, ro.country, ro.region, ro.city, ro.isp, ro.observed_at
 		FROM source_offers o
 		JOIN proxy_resources r ON r.resource_id = o.resource_id AND r.disabled = 0
 		JOIN sources src ON src.source_id = o.source_id AND src.enabled = 1
 		LEFT JOIN proxy_credentials cr ON cr.credential_version = r.credential_version
+		LEFT JOIN source_circuits sc ON sc.source_id = o.source_id
+		LEFT JOIN resource_observations ro ON ro.resource_id = r.resource_id
 		LEFT JOIN scoped_health h
 		  ON h.resource_id = r.resource_id
 		 AND h.context_key = r.credential_version || '|' || r.session_policy
@@ -538,6 +559,7 @@ func (s *Store) SelectCandidates(ctx context.Context, f SelectionFilters) ([]dom
 		  AND (o.provider_expires_at IS NULL OR o.provider_expires_at > ?)
 		  AND (o.local_retention_deadline IS NULL OR o.local_retention_deadline > ?)
 		  AND (h.cooldown_until IS NULL OR h.cooldown_until <= ?)
+		  AND (sc.cooldown_until IS NULL OR sc.cooldown_until <= ?)
 		  AND (
 		        (SELECT COUNT(*) FROM leases l
 		         WHERE l.resource_id = r.resource_id AND l.state = 'ACTIVE' AND l.deadline > ?)
@@ -545,6 +567,13 @@ func (s *Store) SelectCandidates(ctx context.Context, f SelectionFilters) ([]dom
 		         WHERE rv.resource_id = r.resource_id
 		           AND rv.state IN ('RESERVED','VALIDATING') AND rv.deadline > ?)
 		      ) < o.max_pool_leases`
+	if f.ConsumerID != "" && f.ConsumerCooldown > 0 {
+		query += ` AND NOT EXISTS (
+		        SELECT 1 FROM consumer_proxy_cooldowns cpc
+		        WHERE cpc.consumer_id = ? AND cpc.resource_id = r.resource_id
+		          AND cpc.last_delivered_at > ?)`
+		args = append(args, f.ConsumerID, fmtTime(f.Now.Add(-f.ConsumerCooldown)))
+	}
 	if len(f.Transports) > 0 {
 		query += " AND r.transport IN (" + placeholders(len(f.Transports)) + ")"
 		for _, v := range f.Transports {
@@ -563,6 +592,12 @@ func (s *Store) SelectCandidates(ctx context.Context, f SelectionFilters) ([]dom
 			args = append(args, v)
 		}
 	}
+	if len(f.Countries) > 0 {
+		query += " AND ro.country_code IN (" + placeholders(len(f.Countries)) + ")"
+		for _, v := range f.Countries {
+			args = append(args, strings.ToUpper(v))
+		}
+	}
 	if len(f.ExcludeByIDs) > 0 {
 		query += " AND r.resource_id NOT IN (" + placeholders(len(f.ExcludeByIDs)) + ")"
 		for _, v := range f.ExcludeByIDs {
@@ -570,7 +605,8 @@ func (s *Store) SelectCandidates(ctx context.Context, f SelectionFilters) ([]dom
 		}
 	}
 	query += `
-		ORDER BY (h.last_outcome = 'PASS') DESC,
+		ORDER BY CASE WHEN sc.state = 'OPEN' THEN 1 ELSE 0 END,
+		         (h.last_outcome = 'PASS') DESC,
 		         (h.last_outcome = 'FAIL') ASC,
 		         h.last_pass_at DESC,
 		         random()
@@ -588,6 +624,7 @@ func (s *Store) SelectCandidates(ctx context.Context, f SelectionFilters) ([]dom
 		var providerExp, retention, lastPass any
 		var claimsJSON string
 		var port int
+		var obsIP, obsCountryCode, obsCountry, obsRegion, obsCity, obsISP, obsAt sql.NullString
 		if err := rows.Scan(
 			&c.Offer.ID, &c.Offer.SourceID, &c.Offer.ResourceID, &c.Offer.SourceRecordID,
 			&c.Offer.SourceGeneration, &providerExp, &retention, &c.Offer.ExpiryBasis,
@@ -596,6 +633,7 @@ func (s *Store) SelectCandidates(ctx context.Context, f SelectionFilters) ([]dom
 			&c.Resource.CredentialVersion, &c.Resource.Session, &c.Resource.Kind,
 			&c.Resource.Conn.Username, &c.Resource.Conn.Password,
 			&c.LastOutcome, &lastPass, &c.ConsecutiveFailures,
+			&obsIP, &obsCountryCode, &obsCountry, &obsRegion, &obsCity, &obsISP, &obsAt,
 		); err != nil {
 			return nil, mapErr(err)
 		}
@@ -612,6 +650,22 @@ func (s *Store) SelectCandidates(ctx context.Context, f SelectionFilters) ([]dom
 		}
 		if err := json.Unmarshal([]byte(claimsJSON), &c.Offer.Claims); err != nil {
 			return nil, fmt.Errorf("decode claims: %w", err)
+		}
+		if obsIP.Valid && obsIP.String != "" {
+			obs := &domain.Observation{
+				ExitIP:      obsIP.String,
+				CountryCode: obsCountryCode.String,
+				Country:     obsCountry.String,
+				Region:      obsRegion.String,
+				City:        obsCity.String,
+				ISP:         obsISP.String,
+			}
+			if obsAt.Valid {
+				if t, err := time.Parse(time.RFC3339Nano, obsAt.String); err == nil {
+					obs.ObservedAt = t
+				}
+			}
+			c.Observation = obs
 		}
 		out = append(out, c)
 	}

@@ -546,6 +546,57 @@ console (`POST /v1/sources/{id}/validate`); it shares the same single-flight
 guard, probe slots, health rules, and retirement threshold as the nightly run,
 and `GET /v1/admin/validation` exposes live progress.
 
+### Dynamic source scheduling
+
+Source-level health is tracked separately from per-resource health in a
+durable circuit (`source_circuits`). Attributed acquire/prewarm failures
+increment the source streak; judge or budget failures never do. At the
+configured threshold the source opens for an exponential cooldown, and
+selection excludes it. An expired cooldown acts as a half-open trial: the
+source is ranked last, one failure reopens it with a doubled backoff, and a
+pass closes and resets it. This makes a partially dead source yield to
+healthier sources without operator action.
+
+When an acquire request finds no candidates and an eligible provider channel
+exists, the acquisition path performs one demand refill (single-flight with
+the provider's per-source cadence guard) and re-selects. Empty local inventory
+is therefore a refill trigger, not an immediate failure.
+
+`POST /v1/prewarm` fills a target number of recently validated resources
+before a business window. The job pages through candidates preferring
+recently passing then untested resources, records the same attempts, health, source outcomes,
+and observations as acquisition, and stops at the target, deadline, or
+attempt cap. Prewarm evidence never authorizes delivery; every acquire still
+performs a request-owned validation.
+
+### Exit IP and geo observations
+
+The signed judge supplies the verified exit IP on every pass. With an offline
+MaxMind-format database (`geoip_db_path`, GeoLite2 or DB-IP Lite), country,
+region, and city are resolved locally and stored as the resource's latest
+observation (`resource_observations`). Observations are separate from vendor
+claims, are returned in acquire responses, and support country filters.
+Probing never calls a third-party IP service, so no unsigned response is
+trusted and no per-IP query quota applies.
+
+### Downstream keys and channel cooldowns
+
+The master `api_token` and the optional `admin_password` protect management.
+Downstream consumers use generated keys whose tokens are stored only as HMAC
+hashes; a display prefix supports identification. Key identities are limited
+to acquire/release/feedback. Each key may define a default cooldown, and an
+acquire request may override it with `cd` seconds. Successful deliveries
+upsert `(consumer_id, resource_id, last_delivered_at)`; candidate selection
+excludes a resource for that consumer while its last delivery is inside the
+effective window. Failed acquisitions do not write the window, and different
+keys are independent.
+
+No Redis is required for the single-process deployment: the same SQLite
+immediate transactions that fence leases and reservations also serialize
+cooldown updates. Redis becomes relevant only for multi-instance coordination
+or very high write QPS, at which point PostgreSQL should own the durable
+allocation state and Redis can serve as a cache/rate-limit layer.
+
 ### Expiry and retention sweeps
 
 Run a lightweight cleanup task that:

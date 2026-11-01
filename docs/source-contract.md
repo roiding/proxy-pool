@@ -1,7 +1,12 @@
 # Source Integration Contract
 
-Version: 0.6. Status: the `lines_v1` custom family is implemented; provider
-API adapter families remain design-only.
+Version: 0.8. Status: the `lines_v1` custom family is implemented, and the
+first provider adapter family (`provider_api` + `json_mapping_v1`, the
+proxy.scdn.io get_proxy API) is implemented under
+`internal/integrations/scdn/`. Further provider families follow the same
+one-channel-at-a-time path. Source-level circuits, demand refill, prewarm, and
+offline exit-IP/geo observations are implemented in the shared acquisition
+path.
 
 This contract allows formats to be added one channel at a time without changing
 the acquisition, validation, lease, or eviction workflows. Read it together

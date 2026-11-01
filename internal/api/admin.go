@@ -6,10 +6,12 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"net/http"
 	"sync"
 	"time"
 
+	"proxypool/internal/application"
 	"proxypool/internal/domain"
 	"proxypool/internal/storage/sqlite"
 )
@@ -37,8 +39,13 @@ func (s *Server) handleSourcesOverview(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSourceValidate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := s.store.GetSource(r.Context(), id); err != nil {
+	src, err := s.store.GetSource(r.Context(), id)
+	if err != nil {
 		writeStoreError(w, err)
+		return
+	}
+	if src.AdapterType != application.AdapterCustom {
+		writeError(w, domain.InvalidRequest("source %q is a provider channel; it is validated at request time, use fetch instead", id))
 		return
 	}
 	started, err := s.nightly.StartSourceRun(id)
@@ -66,6 +73,32 @@ func (s *Server) handleDeleteSource(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleValidationStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.nightly.Status())
+}
+
+func (s *Server) handlePrewarm(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 8192)
+	var req application.PrewarmRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, domain.InvalidRequest("invalid JSON body: %v", err))
+		return
+	}
+	started, derr := s.prewarm.Start(req)
+	if derr != nil {
+		writeError(w, derr)
+		return
+	}
+	if !started {
+		writeError(w, domain.E("PREWARM_IN_PROGRESS", 409, "another prewarm run is already active"))
+		return
+	}
+	status := s.prewarm.Status()
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"status": "started", "target": status.Target, "started_at": status.StartedAt,
+	})
+}
+
+func (s *Server) handlePrewarmStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.prewarm.Status())
 }
 
 const (
@@ -117,6 +150,13 @@ func (s *sessions) revoke(token string) {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	client := clientHost(r)
+	now := time.Now()
+	if s.logins.blocked(client, now) {
+		writeError(w, domain.E("LOGIN_RATE_LIMITED", 429,
+			"too many failed login attempts; retry in a minute"))
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 2048)
 	var body struct {
 		Token string `json:"token"`
@@ -125,10 +165,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, domain.InvalidRequest("invalid JSON body: %v", err))
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(body.Token), []byte(s.cfg.APIToken)) != 1 {
+	expected := s.cfg.AdminPassword
+	if expected == "" {
+		expected = s.cfg.APIToken
+	}
+	if subtle.ConstantTimeCompare([]byte(body.Token), []byte(expected)) != 1 {
+		s.logins.fail(client, now)
 		writeError(w, domain.Unauthenticated())
 		return
 	}
+	s.logins.clear(client)
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
 		Value:    s.sessions.issue(sessionTTL),
@@ -139,6 +185,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Secure:   r.TLS != nil,
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func clientHost(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {

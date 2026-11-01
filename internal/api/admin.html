@@ -44,7 +44,7 @@
   }
   .card h2 { font-size: 13px; margin: 0 0 14px; color: var(--ink-dim); letter-spacing: .1em; text-transform: uppercase; }
   label { display: block; margin: 10px 0 4px; color: var(--ink-dim); font-size: 12px; }
-  input[type=text], textarea {
+  input[type=text], select, textarea {
     width: 100%; background: #0c1014; color: var(--ink); border: 1px solid var(--panel-edge);
     border-radius: 4px; padding: 8px 10px; font: inherit;
   }
@@ -106,6 +106,59 @@
       <button class="primary" id="importBtn">解析并导入（追加到池子）</button>
       <div id="result" class="flash muted">等待导入…</div>
     </div>
+    <div class="card">
+      <h2>添加 API 渠道（proxy.scdn.io）</h2>
+      <label>渠道 ID（小写字母数字，例如 scdn-http）</label>
+      <input type="text" id="apiSourceId" value="scdn" spellcheck="false">
+      <div class="row">
+        <div>
+          <label>协议（决定传输类型）</label>
+          <select id="apiProtocol">
+            <option value="http">http</option>
+            <option value="https">https（CONNECT）</option>
+            <option value="socks5">socks5</option>
+          </select>
+        </div>
+        <div>
+          <label>每次拉取数量（1–20）</label>
+          <input type="text" id="apiCount" value="20">
+        </div>
+      </div>
+      <label>国家代码（可选，两位字母，例如 CN/US）</label>
+      <input type="text" id="apiCountry" placeholder="留空 = 不限" spellcheck="false">
+      <button class="primary" id="apiCreateBtn">创建渠道并立即拉取</button>
+      <div id="apiResult" class="flash muted">API 渠道由「拉取」按钮补充供给；下发获取仍会实时验活。</div>
+    </div>
+    <div class="card">
+      <h2>预热验活（按目标数量）</h2>
+      <div class="row">
+        <div>
+          <label>目标活跃数量</label>
+          <input type="text" id="prewarmCount" value="5">
+        </div>
+        <div>
+          <label>最长耗时（秒）</label>
+          <input type="text" id="prewarmDeadline" value="120">
+        </div>
+      </div>
+      <button class="primary" id="prewarmBtn">开始预热</button>
+      <div id="prewarmStatus" class="flash muted">尚未预热。预热只刷新健康证据，正式获取仍会逐条重新验活。</div>
+    </div>
+    <div class="card">
+      <h2>下游请求密钥</h2>
+      <label>渠道名（小写字母数字，例如 business-a）</label>
+      <input type="text" id="keyName" value="business-a" spellcheck="false">
+      <label>默认 CD（秒，0 = 不启用）</label>
+      <input type="text" id="keyCd" value="300">
+      <button class="primary" id="keyCreateBtn">创建密钥</button>
+      <div id="keyResult" class="flash muted">创建后 token 只显示一次；下游可用 X-API-Key 或 ?key= 调用。</div>
+      <table style="margin-top:14px">
+        <thead><tr>
+          <th>渠道</th><th>前缀</th><th class="num">默认CD</th><th>状态</th><th>操作</th>
+        </tr></thead>
+        <tbody id="keys"><tr><td colspan="5" class="muted">加载中…</td></tr></tbody>
+      </table>
+    </div>
   </section>
   <section>
     <div class="card">
@@ -118,10 +171,10 @@
       <table>
         <thead><tr>
           <th>渠道</th><th class="num">供给</th><th class="num">通过</th>
-          <th class="num">失败</th><th>最近验活</th><th>状态</th>
+          <th class="num">失败</th><th>最近验活</th><th>熔断</th><th>状态</th>
           <th>操作</th>
         </tr></thead>
-        <tbody id="sources"><tr><td colspan="7" class="muted">加载中…</td></tr></tbody>
+        <tbody id="sources"><tr><td colspan="8" class="muted">加载中…</td></tr></tbody>
       </table>
       <p class="muted" style="font-size:12px;margin-bottom:0">
         自建渠道每天深夜全量验活一次，认证失败立即清理、其他失败达阈值清理；每次下发获取仍会重新验活。
@@ -144,8 +197,8 @@
 </main>
 <div id="login" hidden>
   <div class="card">
-    <h2>输入 API Token</h2>
-    <input type="text" id="token" placeholder="config.json 中的 api_token" spellcheck="false">
+    <h2>输入管理密码</h2>
+    <input type="text" id="token" placeholder="admin_password（未配置时填 api_token）" spellcheck="false">
     <button class="primary" id="loginBtn">进入控制台</button>
     <div id="loginMsg" class="flash"></div>
   </div>
@@ -225,14 +278,17 @@ $("importBtn").onclick = async () => {
 
 async function refresh() {
   try {
-    const [statsR, sourcesR, dailyR, valR] = await Promise.all([
+    const [statsR, sourcesR, dailyR, valR, prewarmR, keysR] = await Promise.all([
       authFetch("/v1/admin/stats"), authFetch("/v1/admin/sources"),
-      authFetch("/v1/admin/daily"), authFetch("/v1/admin/validation")]);
+      authFetch("/v1/admin/daily"), authFetch("/v1/admin/validation"),
+      authFetch("/v1/admin/prewarm"), authFetch("/v1/admin/keys")]);
     const stats = await statsR.json();
     const sources = await sourcesR.json();
     const daily = await dailyR.json();
     const val = await valR.json();
-    pollDelay = val.running ? 3000 : 15000;
+    const prewarm = await prewarmR.json();
+    const keys = await keysR.json();
+    pollDelay = (val.running || prewarm.running) ? 3000 : 15000;
     $("whoami").textContent = "已登录";
     const items = [
       ["渠道", stats.sources], ["资源", stats.resources], ["有效供给", stats.enabled_offers],
@@ -251,17 +307,39 @@ async function refresh() {
     } else {
       $("valStatus").textContent = "尚未运行验证（每晚自动一次，也可在下方手动触发）";
     }
+    if (prewarm.running) {
+      $("prewarmStatus").innerHTML = "预热中：已达标 <b>" + prewarm.ready + "/" + prewarm.target +
+        "</b>，已探测 " + prewarm.probed + "，失败 " + prewarm.failed;
+      $("prewarmStatus").className = "flash warn";
+    } else if (prewarm.finished_at) {
+      $("prewarmStatus").textContent = "上次预热完成 " + new Date(prewarm.finished_at).toLocaleString() +
+        "：达标 " + prewarm.ready + "/" + prewarm.target + "，探测 " + prewarm.probed +
+        (prewarm.stop_reason ? "，停止原因：" + prewarm.stop_reason : "") +
+        (prewarm.last_error ? "，错误：" + prewarm.last_error : "");
+      $("prewarmStatus").className = "flash";
+    }
     $("sources").innerHTML = sources.length ? sources.map((s) => {
       const state = s.enabled ? '<span class="ok">启用</span>' : '<span class="bad">停用</span>';
       const last = s.last_validated_at ? new Date(s.last_validated_at).toLocaleString() : "—";
       const health = s.health_fail > 0 ? '<span class="warn">' + s.health_fail + '</span>' : "0";
+      const circuit = s.circuit_state === "OPEN"
+        ? '<span class="bad">熔断</span>' +
+          (s.source_cooldown_until ? '<span class="muted"> ' +
+            new Date(s.source_cooldown_until).toLocaleTimeString() + '</span>' : "")
+        : '<span class="ok">正常</span>';
+      const isApi = s.adapter_type === "provider_api";
+      const typeBadge = isApi ? '<span class="warn">API</span>' : "自建";
+      const primaryBtn = isApi
+        ? "<button class='fetchBtn' data-src='" + s.source_id + "'>拉取</button>"
+        : "<button class='validateBtn' data-src='" + s.source_id + "'" +
+          (val.running ? " disabled" : "") + ">验活</button>";
       return "<tr><td>" + s.source_id + "</td><td class='num'>" + s.enabled_offers +
         "/" + s.offers + "</td><td class='num ok'>" + s.health_pass +
-        "</td><td class='num'>" + health + "</td><td>" + last + "</td><td>" + state +
-        "</td><td><button class='validateBtn' data-src='" + s.source_id + "'" +
-        (val.running ? " disabled" : "") + ">验活</button> " +
+        "</td><td class='num'>" + health + "</td><td>" + last + "</td><td>" + circuit +
+        "</td><td>" + typeBadge + " " + state +
+        "</td><td>" + primaryBtn + " " +
         "<button class='deleteBtn' data-src='" + s.source_id + "'>删除</button></td></tr>";
-    }).join("") : '<tr><td colspan="7" class="muted">还没有渠道，先在左侧导入</td></tr>';
+    }).join("") : '<tr><td colspan="8" class="muted">还没有渠道，先在左侧导入</td></tr>';
     $("daily").innerHTML = daily.length ? daily.map((d) => {
       const rate = (d.pass_rate * 100).toFixed(1) + "%";
       const cls = d.pass_rate >= 0.8 ? "ok" : (d.pass_rate >= 0.5 ? "warn" : "bad");
@@ -269,6 +347,15 @@ async function refresh() {
         "</td><td class='num ok'>" + d.pass + "</td><td class='num'>" + d.fail +
         "</td><td class='num " + cls + "'>" + rate + "</td></tr>";
     }).join("") : '<tr><td colspan="5" class="muted">今天还没有验活记录</td></tr>';
+    $("keys").innerHTML = keys.length ? keys.map((k) => {
+      const state = k.enabled ? '<span class="ok">启用</span>' : '<span class="bad">停用</span>';
+      const cd = k.default_cooldown_ms ? Math.round(k.default_cooldown_ms / 1000) + "s" : "—";
+      return "<tr><td>" + k.name + "</td><td>" + k.token_prefix + "…</td>" +
+        "<td class='num'>" + cd + "</td><td>" + state + "</td><td>" +
+        "<button class='keyToggleBtn' data-id='" + k.key_id + "' data-enabled='" + k.enabled + "'>" +
+        (k.enabled ? "停用" : "启用") + "</button> " +
+        "<button class='keyDeleteBtn' data-id='" + k.key_id + "'>删除</button></td></tr>";
+    }).join("") : '<tr><td colspan="5" class="muted">还没有下游密钥</td></tr>';
   } catch (err) { /* 401 already handled */ }
 }
 
@@ -315,11 +402,118 @@ function deleteSource(id) {
     })
     .catch(() => {});
 }
+function fetchSource(id) {
+  authFetch("/v1/sources/" + encodeURIComponent(id) + "/fetch", { method: "POST" })
+    .then(async (r) => {
+      const d = await r.json();
+      if (r.ok) {
+        $("valStatus").textContent = "渠道 " + id + " 拉取完成：新增 " + d.added +
+          "，更新 " + d.updated + "，跳过 " + d.skipped +
+          (d.rejected && d.rejected.length ? "，拒绝 " + d.rejected.length : "");
+        $("valStatus").className = "flash good";
+      } else {
+        $("valStatus").textContent = "拉取失败：" + d.error.code + " " + d.error.message;
+        $("valStatus").className = "flash err";
+      }
+      refresh();
+    })
+    .catch(() => {});
+}
+$("apiCreateBtn").onclick = async () => {
+  const src = $("apiSourceId").value.trim();
+  const box = $("apiResult");
+  if (!src) { box.textContent = "请填写渠道 ID"; box.className = "flash err"; return; }
+  box.textContent = "创建中…"; box.className = "flash";
+  try {
+    const create = await authFetch("/v1/sources", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_id: src, adapter_type: "provider_api",
+        protocol: $("apiProtocol").value, fetch_count: parseInt($("apiCount").value || "20", 10),
+        country_code: $("apiCountry").value.trim().toUpperCase(), enabled: true }),
+    });
+    if (!create.ok) { throw new Error(await create.text()); }
+    const fetched = await authFetch("/v1/sources/" + encodeURIComponent(src) + "/fetch", { method: "POST" });
+    const data = await fetched.json();
+    if (!fetched.ok) { throw new Error(JSON.stringify(data)); }
+    box.textContent = "创建并拉取完成：" + JSON.stringify(data, null, 2);
+    box.className = "flash good";
+    refresh();
+  } catch (err) {
+    if (err.message !== "unauthorized") {
+      box.textContent = "创建失败：" + err.message;
+      box.className = "flash err";
+    }
+  }
+};
+$("prewarmBtn").onclick = async () => {
+  const box = $("prewarmStatus");
+  const count = parseInt($("prewarmCount").value || "1", 10);
+  const seconds = parseInt($("prewarmDeadline").value || "120", 10);
+  box.textContent = "正在启动预热…"; box.className = "flash";
+  try {
+    const resp = await authFetch("/v1/prewarm", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ count: count, deadline_ms: seconds * 1000 }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) { throw new Error(JSON.stringify(data)); }
+    box.textContent = "预热已启动，目标 " + data.target + " 条，进度会自动刷新…";
+    box.className = "flash good";
+    refresh();
+  } catch (err) {
+    if (err.message !== "unauthorized") {
+      box.textContent = "预热启动失败：" + err.message;
+      box.className = "flash err";
+    }
+  }
+};
+$("keyCreateBtn").onclick = async () => {
+  const box = $("keyResult");
+  const name = $("keyName").value.trim();
+  const cd = parseInt($("keyCd").value || "0", 10);
+  box.textContent = "创建中…"; box.className = "flash";
+  try {
+    const resp = await authFetch("/v1/admin/keys", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name, default_cd_seconds: cd }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) { throw new Error(JSON.stringify(data)); }
+    box.textContent = "渠道 " + data.key.name + " 已创建，token（只显示一次）：" + data.token;
+    box.className = "flash good";
+    refresh();
+  } catch (err) {
+    if (err.message !== "unauthorized") {
+      box.textContent = "创建失败：" + err.message;
+      box.className = "flash err";
+    }
+  }
+};
+function toggleKey(id, enabled) {
+  authFetch("/v1/admin/keys/" + encodeURIComponent(id), {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled: !enabled }),
+  }).then((r) => r.json()).then((d) => {
+    if (d.error) { $("keyResult").textContent = "操作失败：" + d.error.message; $("keyResult").className = "flash err"; }
+    refresh();
+  }).catch(() => {});
+}
+function deleteKey(id) {
+  if (!confirm("确定删除这个下游密钥？")) { return; }
+  authFetch("/v1/admin/keys/" + encodeURIComponent(id), { method: "DELETE" })
+    .then(() => refresh()).catch(() => {});
+}
 document.addEventListener("click", (e) => {
   const btn = e.target.closest(".validateBtn");
   if (btn && !btn.disabled) { validateSource(btn.dataset.src); }
+  const fbtn = e.target.closest(".fetchBtn");
+  if (fbtn) { fetchSource(fbtn.dataset.src); }
   const del = e.target.closest(".deleteBtn");
   if (del) { deleteSource(del.dataset.src); }
+  const kt = e.target.closest(".keyToggleBtn");
+  if (kt) { toggleKey(kt.dataset.id, kt.dataset.enabled === "true"); }
+  const kd = e.target.closest(".keyDeleteBtn");
+  if (kd) { deleteKey(kd.dataset.id); }
 });
 </script>
 </body>

@@ -15,6 +15,7 @@ import (
 	"proxypool/internal/api"
 	"proxypool/internal/application"
 	"proxypool/internal/config"
+	"proxypool/internal/geoip"
 	"proxypool/internal/maintenance"
 	"proxypool/internal/storage/sqlite"
 )
@@ -66,18 +67,32 @@ func main() {
 	log.Info("judge endpoint", "path", "/v1/judge", "signed", cfg.JudgeSecret != "",
 		"trust_forwarded", cfg.JudgeTrustForwarded)
 	ingest := application.NewIngestService(store, cfg.IdentitySecret, cfg.AllowPrivateAddresses)
+	keys := application.NewKeyService(store, cfg.IdentitySecret)
+	var geoResolver geoip.Resolver
+	if cfg.GeoIPDBPath != "" {
+		mmdb, err := geoip.OpenMMDB(cfg.GeoIPDBPath)
+		if err != nil {
+			log.Error("geoip database invalid", "path", cfg.GeoIPDBPath, "error", err)
+			os.Exit(1)
+		}
+		defer mmdb.Close()
+		geoResolver = mmdb
+		log.Info("geoip database loaded", "path", cfg.GeoIPDBPath)
+	}
 	leaseSvc := application.NewLeaseService(store, application.CooldownConfig{
 		Base: cfg.CooldownBase(), Max: cfg.CooldownMax(), Jitter: cfg.CooldownJitter,
 	})
 	probeSlots := make(chan struct{}, cfg.ProbeSlots)
-	acquire := application.NewAcquireService(store, cfg, cfg.JudgeURL, rootCAs, probeSlots)
+	acquire := application.NewAcquireService(store, cfg, cfg.JudgeURL, rootCAs, probeSlots, geoResolver)
+	acquire.Refiller = ingest
 	nightly := application.NewNightlyValidator(store, cfg, cfg.JudgeURL, rootCAs,
 		application.CooldownConfig{Base: cfg.CooldownBase(), Max: cfg.CooldownMax(), Jitter: cfg.CooldownJitter},
-		probeSlots)
+		probeSlots, geoResolver)
+	prewarm := application.NewPrewarmService(store, cfg, cfg.JudgeURL, rootCAs, probeSlots, geoResolver)
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           api.NewServer(cfg, log, acquire, ingest, leaseSvc, store, nightly).Handler(),
+		Handler:           api.NewServer(cfg, log, acquire, ingest, leaseSvc, store, nightly, prewarm, keys).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -86,7 +101,8 @@ func main() {
 
 	runCtx, stop := context.WithCancel(context.Background())
 	defer stop()
-	go maintenance.Run(runCtx, store, cfg.SweepInterval(), cfg.AttemptRetention(), log)
+	go maintenance.Run(runCtx, store, cfg.SweepInterval(), cfg.AttemptRetention(),
+		cfg.NightlyRetireFailures, log)
 	if cfg.NightlyValidationTime != "" {
 		go nightly.Run(runCtx, cfg.NightlyValidationTime, log)
 	}

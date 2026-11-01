@@ -16,6 +16,7 @@ type Config struct {
 	DatabasePath          string `json:"database_path"`
 	LockPath              string `json:"lock_path"`
 	APIToken              string `json:"api_token"`
+	AdminPassword         string `json:"admin_password"`
 	IdentitySecret        string `json:"identity_secret"`
 	JudgeURL              string `json:"judge_url"`
 	JudgeCAPem            string `json:"judge_ca_pem"`
@@ -46,6 +47,14 @@ type Config struct {
 	NightlyValidationTime string `json:"custom_nightly_validation_time"`
 	NightlyRetireFailures int    `json:"custom_nightly_retire_failures"`
 
+	SourceFailureThreshold  int    `json:"source_failure_threshold"`
+	SourceCooldownBaseMS    int64  `json:"source_cooldown_base_ms"`
+	SourceCooldownMaxMS     int64  `json:"source_cooldown_max_ms"`
+	PrewarmDeadlineMS       int64  `json:"prewarm_deadline_ms"`
+	PrewarmMaxAttempts      int    `json:"prewarm_max_attempts"`
+	GeoIPDBPath             string `json:"geoip_db_path"`
+	MaxDownstreamCooldownMS int64  `json:"max_downstream_cooldown_ms"`
+
 	CooldownBaseMS int64   `json:"first_failure_cooldown_ms"`
 	CooldownMaxMS  int64   `json:"cooldown_max_ms"`
 	CooldownJitter float64 `json:"cooldown_jitter_fraction"`
@@ -53,31 +62,37 @@ type Config struct {
 
 func Default() Config {
 	return Config{
-		ListenAddr:            "127.0.0.1:8080",
-		DatabasePath:          "proxy-pool.db",
-		LockPath:              "proxy-pool.lock",
-		AcquireDeadlineMS:     8000,
-		ConnectTimeoutMS:      1000,
-		ProbeTotalTimeoutMS:   2500,
-		MaxProofAgeMS:         2000,
-		LeaseTTLMS:            30000,
-		MaxLeaseTTLMS:         300000,
-		MinUsableMS:           10000,
-		ExpirySafetyMarginMS:  2000,
-		MaxCount:              5,
-		ParallelPerRequest:    2,
-		ProbeSlots:            4,
-		MaxActiveAcquires:     8,
-		CandidatePage:         8,
-		MaxCandidateAttempts:  25,
-		SQLiteCacheKiB:        2048,
-		SweepIntervalMS:       30000,
-		AttemptRetentionMS:    24 * 3600 * 1000,
-		NightlyValidationTime: "03:00",
-		NightlyRetireFailures: 2,
-		CooldownBaseMS:        30000,
-		CooldownMaxMS:         15 * 60 * 1000,
-		CooldownJitter:        0.25,
+		ListenAddr:              "127.0.0.1:8080",
+		DatabasePath:            "proxy-pool.db",
+		LockPath:                "proxy-pool.lock",
+		AcquireDeadlineMS:       8000,
+		ConnectTimeoutMS:        1000,
+		ProbeTotalTimeoutMS:     2500,
+		MaxProofAgeMS:           2000,
+		LeaseTTLMS:              30000,
+		MaxLeaseTTLMS:           300000,
+		MinUsableMS:             10000,
+		ExpirySafetyMarginMS:    2000,
+		MaxCount:                5,
+		ParallelPerRequest:      2,
+		ProbeSlots:              4,
+		MaxActiveAcquires:       8,
+		CandidatePage:           8,
+		MaxCandidateAttempts:    25,
+		SQLiteCacheKiB:          2048,
+		SweepIntervalMS:         30000,
+		AttemptRetentionMS:      24 * 3600 * 1000,
+		NightlyValidationTime:   "03:00",
+		NightlyRetireFailures:   2,
+		SourceFailureThreshold:  3,
+		SourceCooldownBaseMS:    30 * 1000,
+		SourceCooldownMaxMS:     15 * 60 * 1000,
+		PrewarmDeadlineMS:       120 * 1000,
+		PrewarmMaxAttempts:      500,
+		MaxDownstreamCooldownMS: 7 * 24 * 3600 * 1000,
+		CooldownBaseMS:          30000,
+		CooldownMaxMS:           15 * 60 * 1000,
+		CooldownJitter:          0.25,
 	}
 }
 
@@ -105,6 +120,9 @@ func (c Config) Validate() error {
 	}
 	if len(c.IdentitySecret) < 16 {
 		errs = append(errs, "identity_secret must be at least 16 characters")
+	}
+	if c.AdminPassword != "" && len(c.AdminPassword) < 16 {
+		errs = append(errs, "admin_password must be at least 16 characters when set")
 	}
 	if c.JudgeURL == "" {
 		errs = append(errs, "judge_url is required")
@@ -134,6 +152,21 @@ func (c Config) Validate() error {
 			errs = append(errs, fmt.Sprintf("custom_nightly_validation_time %q must be HH:MM", c.NightlyValidationTime))
 		}
 	}
+	if c.SourceFailureThreshold < 1 {
+		errs = append(errs, "source_failure_threshold must be at least 1")
+	}
+	if c.SourceCooldownBaseMS <= 0 || c.SourceCooldownMaxMS < c.SourceCooldownBaseMS {
+		errs = append(errs, "source_cooldown_base_ms must be positive and <= source_cooldown_max_ms")
+	}
+	if c.PrewarmDeadlineMS <= 0 {
+		errs = append(errs, "prewarm_deadline_ms must be positive")
+	}
+	if c.PrewarmMaxAttempts < 1 {
+		errs = append(errs, "prewarm_max_attempts must be at least 1")
+	}
+	if c.MaxDownstreamCooldownMS <= 0 {
+		errs = append(errs, "max_downstream_cooldown_ms must be positive")
+	}
 	if len(errs) > 0 {
 		return fmt.Errorf("invalid config: %s", strings.Join(errs, "; "))
 	}
@@ -156,5 +189,8 @@ func (c Config) SweepInterval() time.Duration { return c.D(c.SweepIntervalMS) }
 func (c Config) AttemptRetention() time.Duration {
 	return c.D(c.AttemptRetentionMS)
 }
-func (c Config) CooldownBase() time.Duration { return c.D(c.CooldownBaseMS) }
-func (c Config) CooldownMax() time.Duration  { return c.D(c.CooldownMaxMS) }
+func (c Config) CooldownBase() time.Duration       { return c.D(c.CooldownBaseMS) }
+func (c Config) CooldownMax() time.Duration        { return c.D(c.CooldownMaxMS) }
+func (c Config) SourceCooldownBase() time.Duration { return c.D(c.SourceCooldownBaseMS) }
+func (c Config) SourceCooldownMax() time.Duration  { return c.D(c.SourceCooldownMaxMS) }
+func (c Config) PrewarmDeadline() time.Duration    { return c.D(c.PrewarmDeadlineMS) }

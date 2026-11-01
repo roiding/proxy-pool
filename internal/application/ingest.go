@@ -5,49 +5,111 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 
 	"proxypool/internal/domain"
 	"proxypool/internal/integrations/custom"
+	"proxypool/internal/integrations/scdn"
 	"proxypool/internal/storage/sqlite"
 )
 
 var sourceIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
+const (
+	AdapterCustom     = "custom"
+	AdapterProvider   = "provider_api"
+	ParserLines       = "lines_v1"
+	ParserJSONMapping = "json_mapping_v1"
+	// The in-memory guard keeps a misbehaving operator from spinning the
+	// vendor's free API. Per source, not durable across restarts.
+	defaultMinFetchIntervalMS = 1000
+)
+
 type SourceConfig struct {
-	DefaultTransport domain.Transport `json:"default_transport"`
+	DefaultTransport domain.Transport `json:"default_transport,omitempty"`
 	MaxPoolLeases    int              `json:"max_pool_leases"`
-	LocalRetentionMS int64            `json:"local_retention_ms"`
+	LocalRetentionMS int64            `json:"local_retention_ms,omitempty"`
+	Provider         *ProviderConfig  `json:"provider,omitempty"`
+}
+
+// ProviderConfig declares a provider-API channel. The vendor endpoint is
+// fixed by the registered adapter (scdn), so the configuration only chooses
+// the request parameters and transport mapping.
+type ProviderConfig struct {
+	Protocol           string `json:"protocol"`
+	CountryCode        string `json:"country_code,omitempty"`
+	FetchCount         int    `json:"fetch_count,omitempty"`
+	MinFetchIntervalMS int64  `json:"min_fetch_interval_ms,omitempty"`
+}
+
+func (p ProviderConfig) scdnConfig() scdn.Config {
+	return scdn.Config{Protocol: p.Protocol, CountryCode: p.CountryCode, FetchCount: p.FetchCount}
+}
+
+func (p ProviderConfig) minFetchInterval() time.Duration {
+	if p.MinFetchIntervalMS < defaultMinFetchIntervalMS {
+		return defaultMinFetchIntervalMS * time.Millisecond
+	}
+	return time.Duration(p.MinFetchIntervalMS) * time.Millisecond
 }
 
 type IngestService struct {
 	store        *sqlite.Store
 	secret       string
 	allowPrivate bool
-	Now          func() time.Time
+	// ScdnEndpoint and ScdnHTTPClient are test hooks; production uses the
+	// official vendor endpoint and default transport settings.
+	ScdnEndpoint   string
+	ScdnHTTPClient *http.Client
+
+	fetchMu     sync.Mutex
+	fetchBusy   map[string]bool
+	lastFetchAt map[string]time.Time
+	Now         func() time.Time
 }
 
 func NewIngestService(store *sqlite.Store, secret string, allowPrivate bool) *IngestService {
-	return &IngestService{store: store, secret: secret, allowPrivate: allowPrivate, Now: time.Now}
+	return &IngestService{
+		store:          store,
+		secret:         secret,
+		allowPrivate:   allowPrivate,
+		ScdnEndpoint:   scdn.DefaultEndpoint,
+		ScdnHTTPClient: http.DefaultClient,
+		fetchBusy:      map[string]bool{},
+		lastFetchAt:    map[string]time.Time{},
+		Now:            time.Now,
+	}
 }
 
 func (s *IngestService) EnsureSource(ctx context.Context, id string, cfg SourceConfig, enabled bool) error {
 	if !sourceIDPattern.MatchString(id) {
 		return domain.InvalidRequest("source_id must match [a-z0-9][a-z0-9_-]{0,63}")
 	}
+	adapterType, parserType := AdapterCustom, ParserLines
+	if cfg.Provider != nil {
+		if err := cfg.Provider.scdnConfig().Validate(); err != nil {
+			return domain.InvalidRequest("provider channel config: %v", err)
+		}
+		adapterType, parserType = AdapterProvider, ParserJSONMapping
+	}
 	if cfg.MaxPoolLeases <= 0 {
 		cfg.MaxPoolLeases = 1
 	}
-	if cfg.DefaultTransport == "" {
-		cfg.DefaultTransport = domain.TransportHTTP
-	}
-	switch cfg.DefaultTransport {
-	case domain.TransportHTTP, domain.TransportSOCKS5:
-	default:
-		return domain.UnsupportedTransport(string(cfg.DefaultTransport))
+	if cfg.Provider == nil {
+		if cfg.DefaultTransport == "" {
+			cfg.DefaultTransport = domain.TransportHTTP
+		}
+		switch cfg.DefaultTransport {
+		case domain.TransportHTTP, domain.TransportSOCKS5:
+		default:
+			return domain.UnsupportedTransport(string(cfg.DefaultTransport))
+		}
 	}
 	configJSON, err := json.Marshal(cfg)
 	if err != nil {
@@ -56,8 +118,8 @@ func (s *IngestService) EnsureSource(ctx context.Context, id string, cfg SourceC
 	src := domain.Source{
 		ID:          id,
 		Tenant:      "default",
-		AdapterType: "custom",
-		ParserType:  "lines_v1",
+		AdapterType: adapterType,
+		ParserType:  parserType,
 		Enabled:     enabled,
 		ConfigJSON:  string(configJSON),
 	}
@@ -94,32 +156,10 @@ func (s *IngestService) ImportLines(ctx context.Context, sourceID, content strin
 		AllowPrivate:     s.allowPrivate,
 	}, content)
 	now := s.Now()
-	const generation = "pool"
 	candidates := make([]domain.NormalizedCandidate, 0, len(parsed))
 	for _, c := range parsed {
-		c.SourceID = sourceID
-		c.RecordID = recordFingerprint(c.Conn)
-		c.Generation = generation
-		credVer := domain.CredentialVersion(s.secret, c.Conn.Username, c.Conn.Password)
-		c.CredentialVersion = credVer
-		c.ResourceID = domain.ResourceID(s.secret, domain.IdentityKey{
-			Tenant:            src.Tenant,
-			Transport:         c.Conn.Transport,
-			Host:              c.Conn.Host,
-			Port:              c.Conn.Port,
-			CredentialVersion: credVer,
-			Session:           c.Session,
-		})
-		c.OfferID = domain.OfferID(s.secret, sourceID, c.RecordID, c.Generation)
-		if cfg.LocalRetentionMS > 0 {
-			deadline := now.Add(time.Duration(cfg.LocalRetentionMS) * time.Millisecond)
-			c.LocalRetentionDeadline = &deadline
-			c.ExpiryBasis = "pool_policy"
-		} else {
-			c.ExpiryBasis = "unknown"
-		}
-		c.MaxPoolLeases = cfg.MaxPoolLeases
-		candidates = append(candidates, c)
+		cand := s.buildCandidate(src, cfg, c.Conn, now)
+		candidates = append(candidates, cand)
 	}
 	counts, err := s.store.ImportCandidates(ctx, candidates, now)
 	if err != nil {
@@ -140,4 +180,150 @@ func recordFingerprint(conn domain.Connection) string {
 	sum := sha256.Sum256([]byte(string(conn.Transport) + "|" + conn.Host + "|" +
 		strconv.Itoa(conn.Port) + "|" + conn.Username + "|" + conn.Password))
 	return "px-" + hex.EncodeToString(sum[:])[:16]
+}
+
+type FetchResult struct {
+	SourceID  string            `json:"source_id"`
+	Requested int               `json:"requested"`
+	Fetched   int               `json:"fetched"`
+	Added     int               `json:"added"`
+	Updated   int               `json:"updated"`
+	Skipped   int               `json:"skipped"`
+	Rejected  []scdn.EntryError `json:"rejected,omitempty"`
+}
+
+// FetchSource pulls one batch from a provider-API channel and imports it
+// additively. The vendor response carries no expiry data, so offers live
+// under the pool's retention policy until maintenance retires them; every
+// acquire still performs its own fresh validation before delivery.
+func (s *IngestService) FetchSource(ctx context.Context, sourceID string) (FetchResult, *domain.Error) {
+	s.fetchMu.Lock()
+	if s.fetchBusy[sourceID] {
+		s.fetchMu.Unlock()
+		return FetchResult{}, domain.E("SOURCE_FETCH_IN_PROGRESS", 409,
+			"source %q already has a fetch running", sourceID)
+	}
+	s.fetchBusy[sourceID] = true
+	s.fetchMu.Unlock()
+	defer func() {
+		s.fetchMu.Lock()
+		delete(s.fetchBusy, sourceID)
+		s.fetchMu.Unlock()
+	}()
+
+	src, err := s.store.GetSource(ctx, sourceID)
+	if err != nil {
+		return FetchResult{}, domain.AsError(err)
+	}
+	if src.AdapterType != AdapterProvider {
+		return FetchResult{}, domain.InvalidRequest(
+			"source %q is a %q channel; only provider_api sources support fetch",
+			sourceID, src.AdapterType)
+	}
+	if !src.Enabled {
+		return FetchResult{}, domain.InvalidRequest("source %q is disabled", sourceID)
+	}
+	var cfg SourceConfig
+	if err := json.Unmarshal([]byte(src.ConfigJSON), &cfg); err != nil {
+		return FetchResult{}, domain.AsError(fmt.Errorf("decode source config: %w", err))
+	}
+	if cfg.Provider == nil {
+		return FetchResult{}, domain.InvalidRequest("source %q has no provider config", sourceID)
+	}
+	if cfg.MaxPoolLeases <= 0 {
+		cfg.MaxPoolLeases = 1
+	}
+	now := s.Now()
+	s.fetchMu.Lock()
+	last := s.lastFetchAt[sourceID]
+	s.fetchMu.Unlock()
+	if wait := cfg.Provider.minFetchInterval() - now.Sub(last); wait > 0 {
+		return FetchResult{}, domain.E("SOURCE_RATE_LIMITED", 429,
+			"source %q was fetched %.1fs ago; retry in %.1fs",
+			sourceID, now.Sub(last).Seconds(), wait.Seconds())
+	}
+	defer func() {
+		s.fetchMu.Lock()
+		s.lastFetchAt[sourceID] = s.Now()
+		s.fetchMu.Unlock()
+	}()
+
+	fetchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	batch, ferr := scdn.Fetch(fetchCtx, s.ScdnHTTPClient, s.ScdnEndpoint,
+		cfg.Provider.scdnConfig(), s.allowPrivate)
+	if ferr != nil {
+		return FetchResult{}, mapScdnError(ferr)
+	}
+	candidates := make([]domain.NormalizedCandidate, 0, len(batch.Entries))
+	for _, entry := range batch.Entries {
+		conn := domain.Connection{Transport: entry.Transport, Host: entry.Host, Port: entry.Port}
+		cand := s.buildCandidate(src, cfg, conn, now)
+		cand.Claims = map[string]string{"vendor_protocol": cfg.Provider.Protocol}
+		candidates = append(candidates, cand)
+	}
+	counts, err := s.store.ImportCandidates(ctx, candidates, now)
+	if err != nil {
+		return FetchResult{}, domain.StoreUnavailable(err)
+	}
+	return FetchResult{
+		SourceID:  sourceID,
+		Requested: batch.Requested,
+		Fetched:   len(batch.Entries),
+		Added:     counts.Added,
+		Updated:   counts.Updated,
+		Skipped:   counts.Skipped,
+		Rejected:  batch.Errors,
+	}, nil
+}
+
+func mapScdnError(err error) *domain.Error {
+	var serr *scdn.Error
+	if !errors.As(err, &serr) {
+		return domain.AsError(err)
+	}
+	code := "SOURCE_UNAVAILABLE"
+	switch serr.Kind {
+	case scdn.KindFormat:
+		code = "SOURCE_FORMAT_ERROR"
+	case scdn.KindProvider:
+		code = "SOURCE_PROVIDER_ERROR"
+	}
+	return domain.E(code, serr.Status, "provider fetch failed: %s", serr.Detail)
+}
+
+// buildCandidate normalizes one connection into a stable additive offer:
+// content-derived record ID, HMAC resource identity, and pool retention.
+func (s *IngestService) buildCandidate(src domain.Source, cfg SourceConfig, conn domain.Connection, now time.Time) domain.NormalizedCandidate {
+	if cfg.MaxPoolLeases <= 0 {
+		cfg.MaxPoolLeases = 1
+	}
+	cand := domain.NormalizedCandidate{
+		SourceID:   src.ID,
+		RecordID:   recordFingerprint(conn),
+		Generation: "pool",
+		Conn:       conn,
+		Kind:       domain.KindStatic,
+		Session:    domain.SessionStatic,
+	}
+	credVer := domain.CredentialVersion(s.secret, conn.Username, conn.Password)
+	cand.CredentialVersion = credVer
+	cand.ResourceID = domain.ResourceID(s.secret, domain.IdentityKey{
+		Tenant:            src.Tenant,
+		Transport:         conn.Transport,
+		Host:              conn.Host,
+		Port:              conn.Port,
+		CredentialVersion: credVer,
+		Session:           cand.Session,
+	})
+	cand.OfferID = domain.OfferID(s.secret, src.ID, cand.RecordID, cand.Generation)
+	if cfg.LocalRetentionMS > 0 {
+		deadline := now.Add(time.Duration(cfg.LocalRetentionMS) * time.Millisecond)
+		cand.LocalRetentionDeadline = &deadline
+		cand.ExpiryBasis = "pool_policy"
+	} else {
+		cand.ExpiryBasis = "unknown"
+	}
+	cand.MaxPoolLeases = cfg.MaxPoolLeases
+	return cand
 }

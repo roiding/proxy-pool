@@ -2,10 +2,12 @@
 
 An extensible proxy-resource pool with strict, request-time validation.
 
-Status: v0.6, 2026-10-31. The Go vertical slice plus the self-upload workflow
+Status: v0.9, 2026-11-01. The Go vertical slice plus the self-upload workflow
 (web console with session login, additive imports, nightly full validation and
-dead-proxy cleanup, per-source daily success rates, built-in signed judge) are
-implemented and tested.
+dead-proxy cleanup, per-source daily success rates, built-in signed judge) and
+the first provider API channel (proxy.scdn.io), source circuits, demand
+refill, target-count prewarming, and offline geo observations are implemented
+and tested, together with downstream API keys and per-channel proxy cooldowns.
 Remaining work is listed under Implementation status.
 The default deployment targets one Huawei Cloud Flexus L instance with 2 CPU
 cores and 1 GiB RAM; a container build is provided for final deployment.
@@ -55,11 +57,135 @@ gateway will use the same exit IP for the next connection.
 Login with the configured API token issues an HttpOnly session cookie (12-hour,
 SameSite=Strict, in-memory server-side session so logout works; cookie
 mutations also require a fetch-only header as a CSRF guard). The console
-uploads/pastes `lines_v1` txt lists and shows pool stats, per-source health,
-and each source's validation success rate for the current day. Each source row
-has a manual "验活" button that starts an immediate validation pass for that
-source; progress (probed/retired counters) is polled live and the buttons are
-disabled while a pass is running (single-flight, shared probe slots).
+uploads/pastes `lines_v1` txt lists, creates provider API channels, and shows
+pool stats, per-source health, and each source's validation success rate for
+the current day. It also manages downstream API keys and target-count
+prewarming. Custom-source rows have a manual "验活" button that starts an
+immediate validation pass; provider rows have a "拉取" button that fetches one
+vendor batch. Progress (probed/retired counters) is polled live and the
+buttons are disabled while a pass is running (single-flight, shared probe
+slots).
+
+## Provider API Channels
+
+The first provider channel is [proxy.scdn.io](https://proxy.scdn.io/api_docs.php),
+registered as the `provider_api` adapter with a `json_mapping_v1` parser.
+
+```sh
+# Create a channel (protocol declares the transport mapping; batch max 20)
+curl -X POST http://127.0.0.1:8080/v1/sources -H "Authorization: Bearer $TOKEN" \
+  -d '{"source_id":"scdn","adapter_type":"provider_api","protocol":"http","fetch_count":20}'
+
+# Pull one vendor batch (additive import; can be repeated from the console)
+curl -X POST http://127.0.0.1:8080/v1/sources/scdn/fetch -H "Authorization: Bearer $TOKEN"
+```
+
+Semantics and limits:
+
+- The vendor returns bare `host:port` entries with no expiry and no per-proxy
+  protocol metadata, so `protocol` is the declared transport: `http` and
+  `https` map to the pool's http transport (https additionally stores a
+  `vendor_protocol` claim), `socks5` maps to socks5. `all` and `socks4` are
+  rejected at creation instead of being guessed.
+- Fetches are additive and idempotent per content fingerprint, single-flight
+  per source, and guarded by a minimum interval (default 1s, configurable via
+  `min_fetch_interval_ms` in the channel creation body). The payload is
+  bounded (64 KiB), the envelope (`code`/`message`) is checked, and invalid
+  rows are reported as `rejected` without failing the batch.
+- Provider offers carry no provider expiry; they live under the pool's
+  retention policy (`local_retention_ms`, when set). Delivery still requires a
+  fresh request-time validation — importing never authorizes a proxy.
+- Provider sources are never swept nightly. Dead supply is retired by
+  maintenance once acquire-attempt evidence reaches the
+  `custom_nightly_retire_failures` threshold, and re-fetching a tombstoned
+  proxy cannot revive it.
+
+## Dynamic Scheduling
+
+The pool does not treat every source as equally healthy. Three mechanisms
+cooperate:
+
+- **Source circuits.** Each source has a durable circuit. Attributed probe
+  failures (transport/TLS/auth; never judge or budget failures) accumulate per
+  source. At `source_failure_threshold` (default 3) the source opens for
+  `source_cooldown_base_ms` (default 30s); each failed post-cooldown trial
+  doubles the backoff up to `source_cooldown_max_ms` (default 15min). A pass
+  closes and resets the circuit. Candidate selection excludes cooling
+  sources, ranks expired-cooldown sources last (half-open trials), and then
+  prefers recently passing resources, so acquire switches sources without
+  operator intervention. When every eligible source is cooling, the shortfall
+  says so instead of pretending the inventory is empty.
+- **Demand refill.** When an acquire request finds no candidates and an
+  eligible `provider_api` source exists, the pool performs one demand fetch
+  (single-flight, per-source cadence guard) and re-selects. An empty local
+  inventory is not a hard failure if the vendor can supply fresh proxies.
+- **Prewarm.** `POST /v1/prewarm` with `{"count":N,"deadline_ms":120000}`
+  starts one asynchronous fill job. It probes inventory, preferring recently
+  passing then untested resources, records evidence/health, retires repeatedly dead
+  supply, and stops at the target, the deadline, or
+  `prewarm_max_attempts`. Progress is available at `GET /v1/admin/prewarm`
+  and in the console. Prewarm refreshes evidence but never authorizes
+  delivery: each acquire still performs its own request-owned validation.
+
+## Exit IP and Region
+
+Every passing probe already knows the exit IP from the signed judge. If
+`geoip_db_path` points at an offline MaxMind-format database (GeoLite2 City
+or DB-IP Lite City), the pool resolves country/region/city locally and stores
+the latest observation per resource. No third-party lookup is made during
+probing, so there is no per-IP rate limit and no unsigned response to trust.
+
+Acquire responses include `observed: {exit_ip, country_code, country, region,
+city, observed_at}` when available, and requests may filter with
+`"filters": {"countries": ["CN"]}`. Download DB-IP Lite (no account) or
+GeoLite2 and set `geoip_db_path`; an empty path disables geo enrichment while
+still recording exit IPs.
+
+## Downstream Keys and Channel Cooldown
+
+The console and management API are protected by `admin_password` (when set;
+otherwise the legacy `api_token` is accepted). The master `api_token` remains
+valid for admin API calls — never hand it to downstream consumers. Downstream
+consumers should use dedicated keys:
+
+```sh
+# Admin creates a key; the plaintext token is returned exactly once.
+curl -X POST http://127.0.0.1:8080/v1/admin/keys \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -d '{"name":"business-a","default_cd_seconds":300}'
+
+# Downstream acquire with a per-request CD of 300 seconds.
+curl -X POST "http://127.0.0.1:8080/v1/proxies/acquire?cd=300" \
+  -H "X-API-Key: pk_..." \
+  -d '{"count":2}'
+```
+
+Keys are accepted through `Authorization: Bearer`, `X-API-Key`, or the `key`
+query parameter, and may only call acquire, release, and feedback — source
+management, key management, prewarm, and admin endpoints require the master
+token or a console session. Only an HMAC hash and a display prefix are stored;
+the token cannot be recovered after creation. `GET/PATCH/DELETE
+/v1/admin/keys` list, enable/disable, and delete keys.
+
+`cd` is in seconds. The effective window is the request's `cd` when present,
+otherwise the key's `default_cd_seconds`; zero disables the channel cooldown.
+It is tracked per `(key, proxy)` and starts only after a successful delivery,
+so failed acquire attempts do not burn the window. The same key will not
+receive that proxy again until the window expires; different keys are
+independent. This applies equally to provider-API and custom inventory because
+the filter is part of candidate selection.
+
+### Why no Redis
+
+The deployment is a single Go process with one SQLite database in WAL mode.
+Lease fencing, reservations, source circuits, and per-key cooldowns all need
+the same transactional authority; SQLite provides that with immediate
+transactions and durable state, without another service to operate, secure,
+and back up on a 1 GiB instance. Redis would only become necessary when
+multiple application instances must share in-flight state or when sustained
+QPS exceeds a single SQLite writer. At that point the right shape is a
+transactional database (PostgreSQL) as the source of truth with Redis as a
+cache/rate-limit layer — not Redis alone holding leases and cooldowns.
 
 ## Judge Endpoint
 
@@ -130,6 +256,24 @@ Implemented and covered by tests:
   results) under `internal/application/acquire.go`.
 - `lines_v1` custom import with address policy and HMAC-based canonical
   identity under `internal/integrations/custom/` and `internal/domain/`.
+- The first provider API channel (`provider_api` / `json_mapping_v1`) for
+  proxy.scdn.io under `internal/integrations/scdn/`: additive fetch imports
+  via `POST /v1/sources/{id}/fetch`, declared protocol-to-transport mapping,
+  bounded payloads, per-source fetch single-flight and cadence guard, and
+  maintenance-driven retirement of dead provider supply.
+- Durable source circuits with exponential cooldown, automatic source
+  switching, and demand refill of eligible provider channels during acquire
+  (`internal/storage/sqlite/scheduling.go`, `internal/application/acquire.go`).
+- Target-count prewarming via `POST /v1/prewarm` with live status at
+  `GET /v1/admin/prewarm` and in the console
+  (`internal/application/prewarm.go`).
+- Signed exit-IP observations plus optional offline geo lookup
+  (`internal/geoip/`), returned in acquire responses and filterable by
+  country.
+- Separate admin password, hashed downstream API keys with per-key default CD,
+  and per-`(key, proxy)` delivery cooldowns enforced during candidate
+  selection (`internal/api/auth.go`, `internal/application/keys.go`,
+  `internal/storage/sqlite/keys.go`).
 - Self-upload additive semantics: each line keeps a stable content-derived
   record ID, re-uploads update offers in place, and dead supply is cleaned up
   by validation instead of list replacement. HTTP and SOCKS5 lines are
@@ -153,9 +297,10 @@ Implemented and covered by tests:
 - Built-in signed judge endpoint `/v1/judge` with per-IP rate limiting; probes
   verify nonce and HMAC, treating unverifiable answers as interception.
 
-Not implemented yet (later milestones): provider API adapters, idempotency-key
-replay, sticky/rotating gateway semantics, SOCKS transports, feedback trust
-weighting, capacity groups, and the PostgreSQL/Redis scale-out path.
+Not implemented yet (later milestones): additional provider API formats,
+idempotency-key replay, sticky/rotating gateway semantics, SOCKS transports,
+feedback trust weighting, capacity groups, and the PostgreSQL/Redis scale-out
+path.
 
 ## Build and Run
 

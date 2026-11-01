@@ -74,6 +74,31 @@ type Candidate struct {
 	LastOutcome         string
 	LastPassAt          *time.Time
 	ConsecutiveFailures int
+	Observation         *Observation
+}
+
+// Observation is pool-verified evidence about a resource's last successful
+// exit, kept separate from vendor claims on the offer.
+type Observation struct {
+	ExitIP      string    `json:"exit_ip"`
+	CountryCode string    `json:"country_code,omitempty"`
+	Country     string    `json:"country,omitempty"`
+	Region      string    `json:"region,omitempty"`
+	City        string    `json:"city,omitempty"`
+	ISP         string    `json:"isp,omitempty"`
+	ObservedAt  time.Time `json:"observed_at"`
+}
+
+// APIKey is a downstream channel credential. The plaintext token is only
+// returned once at creation; storage keeps an HMAC hash and a display prefix.
+type APIKey struct {
+	ID                string    `json:"key_id"`
+	Name              string    `json:"name"`
+	TokenPrefix       string    `json:"token_prefix"`
+	Enabled           bool      `json:"enabled"`
+	DefaultCooldownMS int64     `json:"default_cooldown_ms"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 type Reservation struct {

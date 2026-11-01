@@ -1,11 +1,12 @@
 package api
 
 import (
-	"crypto/subtle"
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"proxypool/internal/application"
@@ -22,14 +23,19 @@ type Server struct {
 	leases   *application.LeaseService
 	store    *sqlite.Store
 	nightly  *application.NightlyValidator
+	prewarm  *application.PrewarmService
+	keys     *application.KeyService
 	sessions *sessions
+	logins   *loginLimiter
 }
 
 func NewServer(cfg config.Config, log *slog.Logger, acquire *application.AcquireService,
 	ingest *application.IngestService, leases *application.LeaseService, store *sqlite.Store,
-	nightly *application.NightlyValidator) *Server {
+	nightly *application.NightlyValidator, prewarm *application.PrewarmService,
+	keys *application.KeyService) *Server {
 	return &Server{cfg: cfg, log: log, acquire: acquire, ingest: ingest,
-		leases: leases, store: store, nightly: nightly, sessions: newSessions()}
+		leases: leases, store: store, nightly: nightly, prewarm: prewarm,
+		keys: keys, sessions: newSessions(), logins: newLoginLimiter()}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -40,15 +46,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/login", s.handleLogin)
 	mux.HandleFunc("POST /admin/logout", s.handleLogout)
 	mux.HandleFunc("GET /v1/admin/sources", s.handleSourcesOverview)
+	mux.HandleFunc("GET /v1/admin/keys", s.handleListKeys)
+	mux.HandleFunc("POST /v1/admin/keys", s.handleCreateKey)
+	mux.HandleFunc("PATCH /v1/admin/keys/{id}", s.handleUpdateKey)
+	mux.HandleFunc("DELETE /v1/admin/keys/{id}", s.handleDeleteKey)
 	mux.HandleFunc("POST /v1/proxies/acquire", s.handleAcquire)
 	mux.HandleFunc("POST /v1/leases/{id}/release", s.handleRelease)
 	mux.HandleFunc("POST /v1/leases/{id}/feedback", s.handleFeedback)
 	mux.HandleFunc("POST /v1/sources", s.handleCreateSource)
 	mux.HandleFunc("DELETE /v1/sources/{id}", s.handleDeleteSource)
 	mux.HandleFunc("POST /v1/sources/{id}/imports", s.handleImport)
+	mux.HandleFunc("POST /v1/sources/{id}/fetch", s.handleFetchSource)
 	mux.HandleFunc("POST /v1/sources/{id}/validate", s.handleSourceValidate)
+	mux.HandleFunc("POST /v1/prewarm", s.handlePrewarm)
 	mux.HandleFunc("GET /v1/admin/stats", s.handleStats)
 	mux.HandleFunc("GET /v1/admin/validation", s.handleValidationStatus)
+	mux.HandleFunc("GET /v1/admin/prewarm", s.handlePrewarmStatus)
 	mux.HandleFunc("GET /v1/admin/daily", s.handleDailyStats)
 	return s.middleware(mux)
 }
@@ -80,31 +93,27 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		public := r.URL.Path == "/healthz" || r.URL.Path == "/admin" || r.URL.Path == "/v1/judge" ||
 			r.URL.Path == "/admin/login" || r.URL.Path == "/admin/logout"
 		if !public {
-			_, hasBearer := bearerToken(r)
-			if !s.authorized(r) {
+			ident, ok, viaCookie := s.authenticate(r)
+			if !ok {
 				writeError(sw, domain.Unauthenticated())
 				return
 			}
-			// Cookie-authenticated mutations require the fetch-only header so a
-			// cross-site form post cannot ride the session cookie (CSRF guard).
-			if !hasBearer && r.Method != http.MethodGet && r.Header.Get("X-PP-Admin") != "1" {
+			if !ident.Admin && !isDownstreamPath(r) {
+				writeError(sw, domain.E("ADMIN_REQUIRED", 403,
+					"this endpoint requires an admin session or the master API token"))
+				return
+			}
+			// Cookie-authenticated mutations require the fetch-only header so
+			// a cross-site form post cannot ride the session cookie.
+			if viaCookie && r.Method != http.MethodGet && r.Header.Get("X-PP-Admin") != "1" {
 				writeError(sw, domain.E("CSRF_HEADER_REQUIRED", 403,
 					"cookie-authenticated mutations must send X-PP-Admin: 1"))
 				return
 			}
+			r = r.WithContext(context.WithValue(r.Context(), authContextKey{}, ident))
 		}
 		next.ServeHTTP(sw, r)
 	})
-}
-
-func (s *Server) authorized(r *http.Request) bool {
-	if token, ok := bearerToken(r); ok {
-		return subtle.ConstantTimeCompare([]byte(token), []byte(s.cfg.APIToken)) == 1
-	}
-	if cookie, err := r.Cookie(sessionCookie); err == nil {
-		return s.sessions.valid(cookie.Value)
-	}
-	return false
 }
 
 func bearerToken(r *http.Request) (string, bool) {
@@ -147,6 +156,19 @@ func (s *Server) handleAcquire(w http.ResponseWriter, r *http.Request) {
 		writeError(w, domain.InvalidRequest("invalid JSON body: %v", err))
 		return
 	}
+	if raw := r.URL.Query().Get("cd"); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || v < 0 {
+			writeError(w, domain.InvalidRequest("cd query parameter must be a non-negative integer (seconds)"))
+			return
+		}
+		req.CDSeconds = &v
+	}
+	ident := identityFrom(r.Context())
+	req.ConsumerID = ident.ConsumerID
+	if req.CDSeconds == nil && ident.DefaultCooldownMS > 0 {
+		req.CooldownMS = ident.DefaultCooldownMS
+	}
 	result, derr := s.acquire.Acquire(r.Context(), req)
 	if derr != nil {
 		writeError(w, derr)
@@ -185,19 +207,20 @@ func (s *Server) handleFeedback(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateSource(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 8192)
 	var body struct {
-		SourceID         string `json:"source_id"`
-		ParserType       string `json:"parser_type"`
-		DefaultTransport string `json:"default_transport"`
-		MaxPoolLeases    int    `json:"max_pool_leases"`
-		LocalRetentionMS int64  `json:"local_retention_ms"`
-		Enabled          *bool  `json:"enabled"`
+		SourceID           string `json:"source_id"`
+		AdapterType        string `json:"adapter_type"`
+		ParserType         string `json:"parser_type"`
+		DefaultTransport   string `json:"default_transport"`
+		MaxPoolLeases      int    `json:"max_pool_leases"`
+		LocalRetentionMS   int64  `json:"local_retention_ms"`
+		Enabled            *bool  `json:"enabled"`
+		Protocol           string `json:"protocol"`
+		CountryCode        string `json:"country_code"`
+		FetchCount         int    `json:"fetch_count"`
+		MinFetchIntervalMS int64  `json:"min_fetch_interval_ms"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, domain.InvalidRequest("invalid JSON body: %v", err))
-		return
-	}
-	if body.ParserType != "" && body.ParserType != "lines_v1" {
-		writeError(w, domain.InvalidRequest("parser_type %q is not supported; use lines_v1", body.ParserType))
 		return
 	}
 	enabled := true
@@ -209,11 +232,50 @@ func (s *Server) handleCreateSource(w http.ResponseWriter, r *http.Request) {
 		MaxPoolLeases:    body.MaxPoolLeases,
 		LocalRetentionMS: body.LocalRetentionMS,
 	}
+	adapterType := body.AdapterType
+	if adapterType == "" {
+		adapterType = application.AdapterCustom
+	}
+	switch body.AdapterType {
+	case "", application.AdapterCustom:
+		if body.ParserType != "" && body.ParserType != application.ParserLines {
+			writeError(w, domain.InvalidRequest("parser_type %q is not supported; use lines_v1", body.ParserType))
+			return
+		}
+		if body.Protocol != "" {
+			writeError(w, domain.InvalidRequest("protocol belongs to provider_api channels; set adapter_type %q", application.AdapterProvider))
+			return
+		}
+	case application.AdapterProvider:
+		if body.ParserType != "" && body.ParserType != application.ParserJSONMapping {
+			writeError(w, domain.InvalidRequest("parser_type %q is not supported for provider_api; use json_mapping_v1", body.ParserType))
+			return
+		}
+		cfg.Provider = &application.ProviderConfig{
+			Protocol:           body.Protocol,
+			CountryCode:        body.CountryCode,
+			FetchCount:         body.FetchCount,
+			MinFetchIntervalMS: body.MinFetchIntervalMS,
+		}
+	default:
+		writeError(w, domain.InvalidRequest("adapter_type %q is not supported; use custom or provider_api", body.AdapterType))
+		return
+	}
 	if err := s.ingest.EnsureSource(r.Context(), body.SourceID, cfg, enabled); err != nil {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{"source_id": body.SourceID, "status": "created"})
+	writeJSON(w, http.StatusCreated, map[string]string{
+		"source_id": body.SourceID, "adapter_type": adapterType, "status": "created"})
+}
+
+func (s *Server) handleFetchSource(w http.ResponseWriter, r *http.Request) {
+	result, derr := s.ingest.FetchSource(r.Context(), r.PathValue("id"))
+	if derr != nil {
+		writeError(w, derr)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {

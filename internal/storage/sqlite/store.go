@@ -255,14 +255,72 @@ CREATE TABLE IF NOT EXISTS eviction_tombstones (
 );
 `
 
+const schemaV2 = `
+CREATE TABLE IF NOT EXISTS source_circuits (
+  source_id TEXT PRIMARY KEY REFERENCES sources(source_id) ON DELETE CASCADE,
+  state TEXT NOT NULL DEFAULT 'CLOSED',
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  open_count INTEGER NOT NULL DEFAULT 0,
+  cooldown_until TEXT,
+  last_outcome TEXT NOT NULL DEFAULT 'UNKNOWN',
+  last_success_at TEXT,
+  last_failure_at TEXT,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS resource_observations (
+  resource_id TEXT PRIMARY KEY REFERENCES proxy_resources(resource_id) ON DELETE CASCADE,
+  exit_ip TEXT NOT NULL,
+  country_code TEXT NOT NULL DEFAULT '',
+  country TEXT NOT NULL DEFAULT '',
+  region TEXT NOT NULL DEFAULT '',
+  city TEXT NOT NULL DEFAULT '',
+  isp TEXT NOT NULL DEFAULT '',
+  observed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_observations_country ON resource_observations(country_code);
+`
+
+const schemaV3 = `
+CREATE TABLE IF NOT EXISTS api_keys (
+  key_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  token_hash TEXT NOT NULL UNIQUE,
+  token_prefix TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  default_cooldown_ms INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS consumer_proxy_cooldowns (
+  consumer_id TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  last_delivered_at TEXT NOT NULL,
+  PRIMARY KEY (consumer_id, resource_id)
+);
+CREATE INDEX IF NOT EXISTS idx_consumer_cooldown_time
+  ON consumer_proxy_cooldowns(consumer_id, last_delivered_at);
+`
+
+const schemaV4 = `
+ALTER TABLE reservations ADD COLUMN consumer_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_res_consumer
+  ON reservations(consumer_id, resource_id, state, deadline);
+`
+
+const schemaV5 = `
+ALTER TABLE leases ADD COLUMN consumer_id TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_leases_consumer
+  ON leases(consumer_id, resource_id, state, deadline);
+`
+
 func (s *Store) Migrate(ctx context.Context) error {
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return mapErr(err)
 	}
 	switch {
-	case version > 1:
-		return fmt.Errorf("schema version %d is newer than supported version 1", version)
+	case version > 5:
+		return fmt.Errorf("schema version %d is newer than supported version 5", version)
 	case version == 0:
 		err := s.tx(ctx, func(t *sql.Tx) error {
 			if _, err := t.ExecContext(ctx, schemaV1); err != nil {
@@ -271,7 +329,55 @@ func (s *Store) Migrate(ctx context.Context) error {
 			_, err := t.ExecContext(ctx, "PRAGMA user_version = 1")
 			return err
 		})
-		return err
+		if err != nil {
+			return err
+		}
+		version = 1
+	}
+	if version == 1 {
+		if err := s.tx(ctx, func(t *sql.Tx) error {
+			if _, err := t.ExecContext(ctx, schemaV2); err != nil {
+				return err
+			}
+			_, err := t.ExecContext(ctx, "PRAGMA user_version = 2")
+			return err
+		}); err != nil {
+			return err
+		}
+		version = 2
+	}
+	if version == 2 {
+		if err := s.tx(ctx, func(t *sql.Tx) error {
+			if _, err := t.ExecContext(ctx, schemaV3); err != nil {
+				return err
+			}
+			_, err := t.ExecContext(ctx, "PRAGMA user_version = 3")
+			return err
+		}); err != nil {
+			return err
+		}
+		version = 3
+	}
+	if version == 3 {
+		if err := s.tx(ctx, func(t *sql.Tx) error {
+			if _, err := t.ExecContext(ctx, schemaV4); err != nil {
+				return err
+			}
+			_, err := t.ExecContext(ctx, "PRAGMA user_version = 4")
+			return err
+		}); err != nil {
+			return err
+		}
+		version = 4
+	}
+	if version == 4 {
+		return s.tx(ctx, func(t *sql.Tx) error {
+			if _, err := t.ExecContext(ctx, schemaV5); err != nil {
+				return err
+			}
+			_, err := t.ExecContext(ctx, "PRAGMA user_version = 5")
+			return err
+		})
 	}
 	return nil
 }

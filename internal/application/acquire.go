@@ -5,12 +5,14 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"proxypool/internal/config"
 	"proxypool/internal/domain"
+	"proxypool/internal/geoip"
 	"proxypool/internal/storage/sqlite"
 	"proxypool/internal/validation"
 )
@@ -22,12 +24,18 @@ type AcquireRequest struct {
 	Lease        LeasePolicy `json:"lease"`
 	DeadlineMS   int64       `json:"deadline_ms"`
 	AllowPartial *bool       `json:"allow_partial"`
+	// CD is the per-consumer proxy cooldown in seconds. The URL query
+	// parameter cd overrides it. An explicit zero disables the key default.
+	CDSeconds  *int64 `json:"cd"`
+	ConsumerID string `json:"-"`
+	CooldownMS int64  `json:"-"`
 }
 
 type Filters struct {
 	Transports    []domain.Transport    `json:"transports"`
 	ResourceKinds []domain.ResourceKind `json:"resource_kinds"`
 	SourceIDs     []string              `json:"source_ids"`
+	Countries     []string              `json:"countries"`
 }
 
 type LeasePolicy struct {
@@ -37,12 +45,13 @@ type LeasePolicy struct {
 }
 
 type AcquiredItem struct {
-	LeaseID    string            `json:"lease_id"`
-	ResourceID string            `json:"resource_id"`
-	SourceID   string            `json:"source_id"`
-	Conn       domain.Connection `json:"connection"`
-	Validation domain.Evidence   `json:"validation"`
-	ExpiresAt  time.Time         `json:"lease_expires_at"`
+	LeaseID    string              `json:"lease_id"`
+	ResourceID string              `json:"resource_id"`
+	SourceID   string              `json:"source_id"`
+	Conn       domain.Connection   `json:"connection"`
+	Observed   *domain.Observation `json:"observed,omitempty"`
+	Validation domain.Evidence     `json:"validation"`
+	ExpiresAt  time.Time           `json:"lease_expires_at"`
 }
 
 type AcquireResult struct {
@@ -53,6 +62,7 @@ type AcquireResult struct {
 	Partial         bool           `json:"partial"`
 	Items           []AcquiredItem `json:"items"`
 	ShortfallReason string         `json:"shortfall_reason,omitempty"`
+	CooldownSeconds int64          `json:"cooldown_seconds,omitempty"`
 }
 
 type AcquireService struct {
@@ -61,20 +71,35 @@ type AcquireService struct {
 	judgeURL string
 	rootCAs  *x509.CertPool
 	health   *HealthRecorder
+	geo      geoip.Resolver
 	Now      func() time.Time
+	// Refiller is optional; when set, an empty candidate page triggers one
+	// demand refill from an eligible provider channel before giving up.
+	Refiller SourceRefiller
 
+	sourcePolicy sqlite.SourceCircuitPolicy
 	acquireSlots chan struct{}
 	probeSlots   chan struct{}
 }
 
+type SourceRefiller interface {
+	FetchSource(ctx context.Context, sourceID string) (FetchResult, *domain.Error)
+}
+
 func NewAcquireService(store *sqlite.Store, cfg config.Config, judgeURL string,
-	rootCAs *x509.CertPool, probeSlots chan struct{}) *AcquireService {
+	rootCAs *x509.CertPool, probeSlots chan struct{}, geo geoip.Resolver) *AcquireService {
 	return &AcquireService{
-		store:        store,
-		cfg:          cfg,
-		judgeURL:     judgeURL,
-		rootCAs:      rootCAs,
-		health:       newHealthRecorder(store, cfg),
+		store:    store,
+		cfg:      cfg,
+		judgeURL: judgeURL,
+		rootCAs:  rootCAs,
+		health:   newHealthRecorder(store, cfg),
+		geo:      geo,
+		sourcePolicy: sqlite.SourceCircuitPolicy{
+			FailureThreshold: cfg.SourceFailureThreshold,
+			Base:             cfg.SourceCooldownBase(),
+			Max:              cfg.SourceCooldownMax(),
+		},
 		acquireSlots: make(chan struct{}, cfg.MaxActiveAcquires),
 		probeSlots:   probeSlots,
 		Now:          time.Now,
@@ -102,6 +127,12 @@ func (s *AcquireService) validateRequest(req *AcquireRequest) *domain.Error {
 	if len(req.Filters.Transports) == 0 {
 		req.Filters.Transports = []domain.Transport{domain.TransportHTTP, domain.TransportSOCKS5}
 	}
+	req.Filters.Countries = normalizeCountries(req.Filters.Countries)
+	for _, c := range req.Filters.Countries {
+		if len(c) != 2 || c[0] < 'A' || c[0] > 'Z' || c[1] < 'A' || c[1] > 'Z' {
+			return domain.InvalidRequest("country filter %q must be a 2-letter ISO code", c)
+		}
+	}
 	for _, k := range req.Filters.ResourceKinds {
 		switch k {
 		case domain.KindStatic, domain.KindSticky, domain.KindRotating:
@@ -126,6 +157,23 @@ func (s *AcquireService) validateRequest(req *AcquireRequest) *domain.Error {
 	}
 	if req.DeadlineMS > config.MaxAcquireDeadlineMS {
 		req.DeadlineMS = config.MaxAcquireDeadlineMS
+	}
+	if req.CooldownMS < 0 {
+		return domain.InvalidRequest("cd must not be negative")
+	}
+	if req.CDSeconds != nil {
+		if *req.CDSeconds < 0 {
+			return domain.InvalidRequest("cd must not be negative")
+		}
+		if *req.CDSeconds > s.cfg.MaxDownstreamCooldownMS/1000 {
+			return domain.InvalidRequest("cd %d seconds exceeds the maximum of %d seconds",
+				*req.CDSeconds, s.cfg.MaxDownstreamCooldownMS/1000)
+		}
+		req.CooldownMS = *req.CDSeconds * 1000
+	}
+	if req.CooldownMS > s.cfg.MaxDownstreamCooldownMS {
+		return domain.InvalidRequest("cd exceeds the maximum of %d seconds",
+			s.cfg.MaxDownstreamCooldownMS/1000)
 	}
 	return nil
 }
@@ -169,11 +217,12 @@ func (s *AcquireService) Acquire(ctx context.Context, req AcquireRequest) (Acqui
 
 	items := s.dispatchGuard(ctx, run, deadline)
 	result := AcquireResult{
-		RequestID: requestID,
-		Requested: req.Count,
-		Delivered: len(items),
-		Missing:   req.Count - len(items),
-		Items:     items,
+		RequestID:       requestID,
+		Requested:       req.Count,
+		Delivered:       len(items),
+		Missing:         req.Count - len(items),
+		Items:           items,
+		CooldownSeconds: req.CooldownMS / 1000,
 	}
 	result.Partial = len(items) > 0 && len(items) < req.Count && req.AllowPartial != nil && *req.AllowPartial
 	if len(items) == 0 {
@@ -193,6 +242,13 @@ func (s *AcquireService) Acquire(ctx context.Context, req AcquireRequest) (Acqui
 					len(items), req.Count, result.ShortfallReason))
 		}
 	}
+	resourceIDs := make([]string, 0, len(result.Items))
+	for _, item := range result.Items {
+		resourceIDs = append(resourceIDs, item.ResourceID)
+	}
+	recordCtx, cancelRecord := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	_ = s.store.RecordConsumerDeliveries(recordCtx, req.ConsumerID, resourceIDs, s.Now())
+	cancelRecord()
 	return result, nil
 }
 
@@ -218,6 +274,8 @@ type acquireRun struct {
 	inconclusive int
 	attributed   int
 	sawCandidate atomic.Bool
+	sawCooling   atomic.Bool
+	refilled     bool
 }
 
 func (r *acquireRun) recordFailure(kind string) {
@@ -254,6 +312,9 @@ func (r *acquireRun) zeroShortfall() *domain.Error {
 	r.mu.Unlock()
 	sawAny := r.sawCandidate.Load()
 	if !sawAny {
+		if r.sawCooling.Load() {
+			return domain.NoEligibleCandidates("all enabled sources are cooling down after repeated failures")
+		}
 		return domain.NoEligibleCandidates("inventory empty or exhausted")
 	}
 	if reasonFor(inconclusive, attributed) == "VALIDATION_INFRA_UNAVAILABLE" {
@@ -265,6 +326,7 @@ func (r *acquireRun) zeroShortfall() *domain.Error {
 
 func (s *AcquireService) feedCandidates(ctx context.Context, run *acquireRun, out chan<- domain.Candidate, req AcquireRequest) {
 	defer close(out)
+feed:
 	for int(run.attempts.Load()) < run.maxAttempts {
 		if ctx.Err() != nil {
 			return
@@ -274,19 +336,39 @@ func (s *AcquireService) feedCandidates(ctx context.Context, run *acquireRun, ou
 		}
 		exclude := run.excludeList()
 		cands, err := s.store.SelectCandidates(ctx, sqlite.SelectionFilters{
-			Profile:      req.Profile,
-			Now:          s.Now(),
-			UsefulCutoff: s.Now().Add(time.Duration(req.Lease.MinUsableMS)*time.Millisecond + s.cfg.ExpirySafetyMargin()),
-			Transports:   req.Filters.Transports,
-			Kinds:        req.Filters.ResourceKinds,
-			SourceIDs:    req.Filters.SourceIDs,
-			ExcludeByIDs: exclude,
-			Limit:        s.cfg.CandidatePage,
+			Profile:          req.Profile,
+			Now:              s.Now(),
+			UsefulCutoff:     s.Now().Add(time.Duration(req.Lease.MinUsableMS)*time.Millisecond + s.cfg.ExpirySafetyMargin()),
+			Transports:       req.Filters.Transports,
+			Kinds:            req.Filters.ResourceKinds,
+			SourceIDs:        req.Filters.SourceIDs,
+			Countries:        req.Filters.Countries,
+			ExcludeByIDs:     exclude,
+			ConsumerID:       req.ConsumerID,
+			ConsumerCooldown: time.Duration(req.CooldownMS) * time.Millisecond,
+			Limit:            s.cfg.CandidatePage,
 		})
 		if err != nil {
 			return
 		}
 		if len(cands) == 0 {
+			if cooling, err := s.store.CountCoolingSources(ctx, s.Now()); err == nil && cooling > 0 {
+				run.sawCooling.Store(true)
+			}
+			if !run.refilled && s.Refiller != nil && len(req.Filters.Countries) == 0 {
+				run.refilled = true
+				ids, err := s.store.ProviderSourcesForRefill(ctx, s.Now(), req.Filters.SourceIDs, 3)
+				if err == nil {
+					for _, id := range ids {
+						if !s.providerSupports(ctx, id, req.Filters.Transports) {
+							continue
+						}
+						if _, derr := s.Refiller.FetchSource(ctx, id); derr == nil {
+							continue feed
+						}
+					}
+				}
+			}
 			return
 		}
 		for _, c := range cands {
@@ -305,6 +387,30 @@ func (s *AcquireService) feedCandidates(ctx context.Context, run *acquireRun, ou
 			}
 		}
 	}
+}
+
+// providerSupports reports whether a provider channel's declared protocol
+// can satisfy the request's transport filter, so demand refill does not
+// spend a vendor call on a channel that cannot match.
+func (s *AcquireService) providerSupports(ctx context.Context, sourceID string, transports []domain.Transport) bool {
+	src, err := s.store.GetSource(ctx, sourceID)
+	if err != nil {
+		return false
+	}
+	var cfg SourceConfig
+	if err := json.Unmarshal([]byte(src.ConfigJSON), &cfg); err != nil || cfg.Provider == nil {
+		return false
+	}
+	transport := domain.TransportHTTP
+	if cfg.Provider.Protocol == "socks5" {
+		transport = domain.TransportSOCKS5
+	}
+	for _, t := range transports {
+		if t == transport {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *acquireRun) excludeList() []string {
@@ -351,6 +457,8 @@ func (s *AcquireService) processCandidate(ctx context.Context, run *acquireRun, 
 		Profile:             req.Profile,
 		Now:                 now,
 		ReservationDeadline: requestDeadline.Add(2 * time.Second),
+		ConsumerID:          req.ConsumerID,
+		Cooldown:            time.Duration(req.CooldownMS) * time.Millisecond,
 	})
 	if err != nil {
 		return
@@ -368,8 +476,11 @@ func (s *AcquireService) processCandidate(ctx context.Context, run *acquireRun, 
 		_ = derr
 	}
 	if fail == nil {
+		obs := recordObservation(ctx, s.store, s.geo, res.Candidate.Resource.ID, ev, s.Now())
+		s.recordSourceOutcome(ctx, res.Candidate.Offer.SourceID, "PASS")
 		item, cerr := s.commitLease(ctx, res, ev, req, requestID)
 		if cerr == nil {
+			item.Observed = obs
 			run.delivered.Add(1)
 			run.mu.Lock()
 			run.leases = append(run.leases, item)
@@ -386,7 +497,26 @@ func (s *AcquireService) processCandidate(ctx context.Context, run *acquireRun, 
 	}
 	if fail.Attributed() {
 		_ = s.health.Record(ctx, res.Candidate.Resource.ID, res.ContextKey, req.Profile, "FAIL")
+		s.recordSourceOutcome(ctx, res.Candidate.Offer.SourceID, "FAIL")
 	}
+}
+
+func (s *AcquireService) recordSourceOutcome(ctx context.Context, sourceID, outcome string) {
+	_, _ = s.store.RecordSourceOutcome(ctx, sourceID, outcome, s.Now(), s.sourcePolicy)
+}
+
+func normalizeCountries(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, c := range in {
+		c = strings.ToUpper(strings.TrimSpace(c))
+		if c == "" || seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	return out
 }
 
 func recordAttempt(ctx context.Context, store *sqlite.Store, ev domain.Evidence, res sqlite.Reserved, fail *validation.Failure) *domain.Error {
@@ -440,6 +570,7 @@ func (s *AcquireService) commitLease(ctx context.Context, res sqlite.Reserved, e
 		ExpectedFence:  res.Fence,
 		ExpectedEpoch:  res.FailureEpoch,
 		Profile:        req.Profile,
+		ConsumerID:     req.ConsumerID,
 		Now:            now,
 	})
 	if err != nil {

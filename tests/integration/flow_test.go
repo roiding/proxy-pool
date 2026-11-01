@@ -137,6 +137,8 @@ type env struct {
 	leases  *application.LeaseService
 	acquire *application.AcquireService
 	nightly *application.NightlyValidator
+	prewarm *application.PrewarmService
+	keys    *application.KeyService
 }
 
 func newEnv(t *testing.T, j *judge, mutate func(*config.Config)) *env {
@@ -168,17 +170,23 @@ func newEnvWithConfig(t *testing.T, cfg config.Config, rootCAs *x509.CertPool) *
 	if err := store.Migrate(context.Background()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	return &env{
+	probeSlots := make(chan struct{}, cfg.ProbeSlots)
+	e := &env{
 		cfg:    cfg,
 		store:  store,
 		ingest: application.NewIngestService(store, cfg.IdentitySecret, cfg.AllowPrivateAddresses),
 		leases: application.NewLeaseService(store, application.CooldownConfig{Base: cfg.CooldownBase(), Max: cfg.CooldownMax(), Jitter: cfg.CooldownJitter}),
 		acquire: application.NewAcquireService(store, cfg, cfg.JudgeURL, rootCAs,
-			make(chan struct{}, cfg.ProbeSlots)),
+			probeSlots, nil),
 		nightly: application.NewNightlyValidator(store, cfg, cfg.JudgeURL, rootCAs,
 			application.CooldownConfig{Base: cfg.CooldownBase(), Max: cfg.CooldownMax(), Jitter: cfg.CooldownJitter},
-			make(chan struct{}, cfg.ProbeSlots)),
+			probeSlots, nil),
+		prewarm: application.NewPrewarmService(store, cfg, cfg.JudgeURL, rootCAs,
+			probeSlots, nil),
+		keys: application.NewKeyService(store, cfg.IdentitySecret),
 	}
+	e.acquire.Refiller = e.ingest
+	return e
 }
 
 func (e *env) importProxy(t *testing.T, sourceID, line string) {
@@ -339,7 +347,7 @@ func TestLeaseExpirySweepReclaimsSlot(t *testing.T) {
 		t.Fatal("second acquire should fail while lease is active")
 	}
 	time.Sleep(400 * time.Millisecond)
-	maintenance.RunOnce(context.Background(), e.store, e.cfg.AttemptRetention(), testLogger())
+	maintenance.RunOnce(context.Background(), e.store, e.cfg.AttemptRetention(), 0, testLogger())
 	result, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
 	if derr != nil || result.Delivered != 1 {
 		t.Fatalf("acquire after sweep: %v %+v", derr, result)
@@ -506,7 +514,7 @@ func TestAPIEndToEnd(t *testing.T) {
 	e := newEnv(t, j, nil)
 	e.importProxy(t, "manual", fmt.Sprintf("http://127.0.0.1:%d", portOf(proxy.URL)))
 	httpSrv := httptest.NewServer(api.NewServer(e.cfg, testLogger(),
-		e.acquire, e.ingest, e.leases, e.store, e.nightly).Handler())
+		e.acquire, e.ingest, e.leases, e.store, e.nightly, e.prewarm, e.keys).Handler())
 	defer httpSrv.Close()
 
 	resp, err := http.Post(httpSrv.URL+"/v1/proxies/acquire", "application/json", strings.NewReader(`{"count":1}`))
@@ -650,7 +658,7 @@ func TestDeleteSourceViaAPI(t *testing.T) {
 	e := newEnv(t, j, nil)
 	e.importProxy(t, "manual", fmt.Sprintf("http://127.0.0.1:%d", portOf(proxy.URL)))
 	httpSrv := httptest.NewServer(api.NewServer(e.cfg, testLogger(),
-		e.acquire, e.ingest, e.leases, e.store, e.nightly).Handler())
+		e.acquire, e.ingest, e.leases, e.store, e.nightly, e.prewarm, e.keys).Handler())
 	defer httpSrv.Close()
 
 	del := func(id string) (int, []byte) {
@@ -757,7 +765,7 @@ func TestAdminPageAndSourcesAPI(t *testing.T) {
 	e := newEnv(t, j, nil)
 	e.importProxy(t, "manual", "http://127.0.0.1:1")
 	httpSrv := httptest.NewServer(api.NewServer(e.cfg, testLogger(),
-		e.acquire, e.ingest, e.leases, e.store, e.nightly).Handler())
+		e.acquire, e.ingest, e.leases, e.store, e.nightly, e.prewarm, e.keys).Handler())
 	defer httpSrv.Close()
 
 	resp, err := http.Get(httpSrv.URL + "/admin")
@@ -789,7 +797,7 @@ func TestAdminAuthSessionAndDailyStats(t *testing.T) {
 	e := newEnv(t, j, nil)
 	e.importProxy(t, "manual", fmt.Sprintf("http://127.0.0.1:%d", portOf(proxy.URL)))
 	httpSrv := httptest.NewServer(api.NewServer(e.cfg, testLogger(),
-		e.acquire, e.ingest, e.leases, e.store, e.nightly).Handler())
+		e.acquire, e.ingest, e.leases, e.store, e.nightly, e.prewarm, e.keys).Handler())
 	defer httpSrv.Close()
 	client := &http.Client{}
 
@@ -914,7 +922,7 @@ func TestManualSourceValidationViaAPI(t *testing.T) {
 		t.Fatalf("import: %v", derr)
 	}
 	httpSrv := httptest.NewServer(api.NewServer(e.cfg, testLogger(),
-		e.acquire, e.ingest, e.leases, e.store, e.nightly).Handler())
+		e.acquire, e.ingest, e.leases, e.store, e.nightly, e.prewarm, e.keys).Handler())
 	defer httpSrv.Close()
 
 	validate, _ := http.NewRequest(http.MethodPost, httpSrv.URL+"/v1/sources/nope/validate", nil)
@@ -1016,7 +1024,7 @@ func TestBuiltInJudgeSignedHTTP(t *testing.T) {
 	cfgWrong := cfg
 	cfgWrong.JudgeSecret = "wrong-judge-secret-0123456789abcdef"
 	bad := application.NewAcquireService(e.store, cfgWrong, cfgWrong.JudgeURL, nil,
-		make(chan struct{}, cfg.ProbeSlots))
+		make(chan struct{}, cfg.ProbeSlots), nil)
 	if err := e.ingest.EnsureSource(context.Background(), "manual2",
 		application.SourceConfig{DefaultTransport: domain.TransportHTTP, MaxPoolLeases: 1}, true); err != nil {
 		t.Fatalf("ensure source2: %v", err)

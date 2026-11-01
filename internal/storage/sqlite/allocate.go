@@ -26,6 +26,8 @@ type ReserveArgs struct {
 	Profile             string
 	Now                 time.Time
 	ReservationDeadline time.Time
+	ConsumerID          string
+	Cooldown            time.Duration
 }
 
 // ReserveSlot atomically claims the exclusive allocation slot for a candidate.
@@ -93,6 +95,40 @@ func (s *Store) ReserveSlot(ctx context.Context, cand domain.Candidate, a Reserv
 		if active >= maxLeases {
 			return ErrCapacity
 		}
+		if a.ConsumerID != "" && a.Cooldown > 0 {
+			var recent int
+			if err := t.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM consumer_proxy_cooldowns
+				WHERE consumer_id = ? AND resource_id = ? AND last_delivered_at > ?`,
+				a.ConsumerID, cand.Resource.ID, fmtTime(a.Now.Add(-a.Cooldown))).Scan(&recent); err != nil {
+				return err
+			}
+			if recent > 0 {
+				return ErrNotEligible
+			}
+			var inFlight int
+			if err := t.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM reservations
+				WHERE consumer_id = ? AND resource_id = ?
+				  AND state IN ('RESERVED','VALIDATING') AND deadline > ?`,
+				a.ConsumerID, cand.Resource.ID, fmtTime(a.Now)).Scan(&inFlight); err != nil {
+				return err
+			}
+			if inFlight > 0 {
+				return ErrNotEligible
+			}
+			var activeForConsumer int
+			if err := t.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM leases
+				WHERE consumer_id = ? AND resource_id = ?
+				  AND state = 'ACTIVE' AND deadline > ?`,
+				a.ConsumerID, cand.Resource.ID, fmtTime(a.Now)).Scan(&activeForConsumer); err != nil {
+				return err
+			}
+			if activeForConsumer > 0 {
+				return ErrNotEligible
+			}
+		}
 		contextKey := domain.ContextKey(credVersion, cand.Resource.Session)
 		var epoch int64
 		err = t.QueryRowContext(ctx, `
@@ -114,10 +150,10 @@ func (s *Store) ReserveSlot(ctx context.Context, cand domain.Candidate, a Reserv
 		}
 		reservationID := domain.NewID("res_")
 		_, err = t.ExecContext(ctx, `
-			INSERT INTO reservations(reservation_id, resource_id, offer_id, context_key, owner, fence, deadline, state, created_at)
-			VALUES(?,?,?,?,?,?,?, 'RESERVED', ?)`,
+			INSERT INTO reservations(reservation_id, resource_id, offer_id, context_key, owner, fence, deadline, state, created_at, consumer_id)
+			VALUES(?,?,?,?,?,?,?, 'RESERVED', ?, ?)`,
 			reservationID, cand.Resource.ID, cand.Offer.ID, contextKey, a.Owner,
-			newFence, fmtTime(a.ReservationDeadline), fmtTime(a.Now))
+			newFence, fmtTime(a.ReservationDeadline), fmtTime(a.Now), a.ConsumerID)
 		if err != nil {
 			return err
 		}
@@ -159,6 +195,7 @@ type CommitArgs struct {
 	ExpectedFence  int64
 	ExpectedEpoch  int64
 	Profile        string
+	ConsumerID     string
 	Now            time.Time
 }
 
@@ -222,11 +259,11 @@ func (s *Store) CommitLease(ctx context.Context, a CommitArgs) error {
 		}
 		if _, err := t.ExecContext(ctx, `
 			INSERT INTO leases(lease_id, tenant, request_id, resource_id, offer_id, context_key,
-			  mode, fence, deadline, state, connection_json, validation_json, created_at)
-			VALUES(?,?,?,?,?,?,?,?,?, 'ACTIVE', ?, ?, ?)`,
+			  mode, fence, deadline, state, connection_json, validation_json, created_at, consumer_id)
+			VALUES(?,?,?,?,?,?,?,?,?, 'ACTIVE', ?, ?, ?, ?)`,
 			a.LeaseID, a.Tenant, a.RequestID, resourceID, offerID, contextKey,
 			a.Mode, a.ExpectedFence, fmtTime(a.Deadline), a.ConnJSON, a.ValidationJSON,
-			fmtTime(a.Now)); err != nil {
+			fmtTime(a.Now), a.ConsumerID); err != nil {
 			return err
 		}
 		res, err := t.ExecContext(ctx, `

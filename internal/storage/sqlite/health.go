@@ -94,6 +94,7 @@ type SweepStats struct {
 	ExpiredReservations int64 `json:"expired_reservations"`
 	PrunedAttempts      int64 `json:"pruned_attempts"`
 	PrunedFeedback      int64 `json:"pruned_feedback"`
+	PrunedCooldowns     int64 `json:"pruned_cooldowns"`
 }
 
 func (s *Store) SweepExpired(ctx context.Context, now time.Time, attemptRetention time.Duration) (SweepStats, error) {
@@ -126,6 +127,13 @@ func (s *Store) SweepExpired(ctx context.Context, now time.Time, attemptRetentio
 		return stats, mapErr(err)
 	}
 	stats.PrunedFeedback, _ = res.RowsAffected()
+	res, err = s.db.ExecContext(ctx,
+		"DELETE FROM consumer_proxy_cooldowns WHERE last_delivered_at < ?",
+		fmtTime(now.Add(-30*24*time.Hour)))
+	if err != nil {
+		return stats, mapErr(err)
+	}
+	stats.PrunedCooldowns, _ = res.RowsAffected()
 	_, _ = s.db.ExecContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)")
 	return stats, nil
 }

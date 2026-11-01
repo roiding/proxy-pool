@@ -11,6 +11,7 @@ import (
 
 	"proxypool/internal/config"
 	"proxypool/internal/domain"
+	"proxypool/internal/geoip"
 	"proxypool/internal/storage/sqlite"
 	"proxypool/internal/validation"
 )
@@ -38,6 +39,7 @@ type NightlyValidator struct {
 	judgeURL       string
 	rootCAs        *x509.CertPool
 	health         *HealthRecorder
+	geo            geoip.Resolver
 	probeSlots     chan struct{}
 	retireFailures int
 
@@ -47,13 +49,15 @@ type NightlyValidator struct {
 }
 
 func NewNightlyValidator(store *sqlite.Store, cfg config.Config, judgeURL string,
-	rootCAs *x509.CertPool, cooldown CooldownConfig, probeSlots chan struct{}) *NightlyValidator {
+	rootCAs *x509.CertPool, cooldown CooldownConfig, probeSlots chan struct{},
+	geo geoip.Resolver) *NightlyValidator {
 	return &NightlyValidator{
 		store:          store,
 		cfg:            cfg,
 		judgeURL:       judgeURL,
 		rootCAs:        rootCAs,
 		health:         &HealthRecorder{Store: store, Cooldown: cooldown, Now: time.Now},
+		geo:            geo,
 		probeSlots:     probeSlots,
 		retireFailures: cfg.NightlyRetireFailures,
 		Now:            time.Now,
@@ -236,6 +240,9 @@ func (n *NightlyValidator) probeOne(ctx context.Context, runID string, cand doma
 		detail = fail.Kind + ": " + fail.Detail
 	}
 	ev.Outcome = outcome
+	if fail == nil {
+		recordObservation(ctx, n.store, n.geo, cand.Resource.ID, ev, n.Now())
+	}
 	if err := n.store.RecordAttempt(ctx, ev, cand.Resource.ID, contextKey, detail); err != nil {
 		return err
 	}
@@ -259,7 +266,7 @@ func (n *NightlyValidator) retireFailed(ctx context.Context, sourceID string) in
 	if n.retireFailures <= 0 {
 		return 0
 	}
-	resourceIDs, err := n.store.RetireCandidates(ctx, n.retireFailures, sourceID)
+	resourceIDs, err := n.store.RetireCandidates(ctx, n.retireFailures, "custom", sourceID)
 	if err != nil {
 		return 0
 	}
