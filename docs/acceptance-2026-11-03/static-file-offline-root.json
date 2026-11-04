@@ -1,0 +1,48 @@
+{
+  "input_bytes": 78278,
+  "input_sha256": "1c315c5240fc0c248bdd3de61a686b87d9bb95d1f75a09627aea3ccb484b9237",
+  "isolated_durable_import": {
+    "added": 1400,
+    "idempotent_replay_same_batch": true,
+    "integrity": "ok",
+    "json_cross_entry_duplicates": 1400,
+    "rejected": 0,
+    "status": "PASS",
+    "table_counts": {
+      "import_batches": 2,
+      "import_idempotency": 2,
+      "leases": 0,
+      "project_proxy_cd": 0,
+      "proxy_resources": 1400,
+      "resource_observations": 0,
+      "scoped_health": 0,
+      "source_offers": 1400,
+      "validation_evidence": 0
+    },
+    "temporary_credential_database": "removed",
+    "unknown_provider_expiry": 1400
+  },
+  "live_verification": {
+    "status": "FAIL_IN_DELEGATED_SAMPLE",
+    "root_probe_count": 0,
+    "source_report": "static-file-live12.json",
+    "attempted": 12,
+    "pass": 0,
+    "fail": 12,
+    "failure_class": "AUTH",
+    "sampling_scope": "first 12 of 1400 records; 1388 untested",
+    "root_review": "executed script and preserved stdout/JSON reviewed; live calls not repeated"
+  },
+  "nonempty_records": 1400,
+  "production_parser": {
+    "accepted": 1400,
+    "authenticated": 1400,
+    "rejected": 0,
+    "status": "PASS",
+    "transports": {
+      "http": 1400
+    },
+    "unique_normalized_connections": 1400
+  },
+  "scope": "read-only supplied file; offline production parser and temporary inventory; no network calls, real configuration, or production database changes"
+}

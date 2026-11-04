@@ -31,36 +31,40 @@ type ValidationStatus struct {
 
 // NightlyValidator validates self-uploaded (custom) sources: one full pass per
 // night at the configured time, plus operator-triggered passes for one source.
-// It refreshes health evidence, retires repeatedly dead proxies, and never
-// authorizes a delivery: every acquire still performs its own fresh validation.
+// It refreshes health evidence, deletes only definitively dead credentials,
+// and never authorizes a delivery: every acquire still performs its own fresh
+// validation. Uncertain failures only grow the retest backoff.
 type NightlyValidator struct {
-	store          *sqlite.Store
-	cfg            config.Config
-	judgeURL       string
-	rootCAs        *x509.CertPool
-	health         *HealthRecorder
-	geo            geoip.Resolver
-	probeSlots     chan struct{}
-	retireFailures int
+	store      *sqlite.Store
+	cfg        config.Config
+	judgeURL   string
+	rootCAs    *x509.CertPool
+	health     *HealthRecorder
+	geo        geoip.Resolver
+	probeSlots chan struct{}
 
 	statusMu sync.Mutex
 	status   ValidationStatus
 	Now      func() time.Time
+
+	runMu     sync.Mutex
+	runCancel context.CancelFunc
+	runDone   chan struct{}
+	shutdown  bool
 }
 
 func NewNightlyValidator(store *sqlite.Store, cfg config.Config, judgeURL string,
 	rootCAs *x509.CertPool, cooldown CooldownConfig, probeSlots chan struct{},
 	geo geoip.Resolver) *NightlyValidator {
 	return &NightlyValidator{
-		store:          store,
-		cfg:            cfg,
-		judgeURL:       judgeURL,
-		rootCAs:        rootCAs,
-		health:         &HealthRecorder{Store: store, Cooldown: cooldown, Now: time.Now},
-		geo:            geo,
-		probeSlots:     probeSlots,
-		retireFailures: cfg.NightlyRetireFailures,
-		Now:            time.Now,
+		store:      store,
+		cfg:        cfg,
+		judgeURL:   judgeURL,
+		rootCAs:    rootCAs,
+		health:     &HealthRecorder{Store: store, Cooldown: cooldown, Now: time.Now},
+		geo:        geo,
+		probeSlots: probeSlots,
+		Now:        time.Now,
 	}
 }
 
@@ -127,11 +131,48 @@ func (n *NightlyValidator) StartSourceRun(sourceID string) (bool, error) {
 	if !n.tryBegin("manual", sourceID) {
 		return false, nil
 	}
+	n.runMu.Lock()
+	if n.shutdown {
+		n.runMu.Unlock()
+		n.finish(errors.New("service shutting down"))
+		return false, errors.New("service shutting down")
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	n.runCancel, n.runDone = cancel, done
+	n.runMu.Unlock()
 	go func() {
-		_, _, err := n.runPass(context.Background(), sourceID)
+		defer close(done)
+		_, _, err := n.runPass(runCtx, sourceID)
+		n.runMu.Lock()
+		if n.runDone == done {
+			n.runCancel, n.runDone = nil, nil
+		}
+		n.runMu.Unlock()
 		n.finish(err)
 	}()
 	return true, nil
+}
+
+// Shutdown cancels the current async source pass and waits for workers to
+// leave the probe path. Synchronous RunOnce callers own their own context.
+func (n *NightlyValidator) Shutdown(ctx context.Context) error {
+	n.runMu.Lock()
+	n.shutdown = true
+	cancel, done := n.runCancel, n.runDone
+	n.runMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if done == nil {
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // runPass pages through the eligible candidates of the given source ("" = all
@@ -165,6 +206,9 @@ func (n *NightlyValidator) runPass(ctx context.Context, sourceID string) (int, i
 		if workers > len(candidates) {
 			workers = len(candidates)
 		}
+		if workers < 1 {
+			workers = 1
+		}
 		jobs := make(chan domain.Candidate)
 		go func() {
 			defer close(jobs)
@@ -189,6 +233,9 @@ func (n *NightlyValidator) runPass(ctx context.Context, sourceID string) (int, i
 							firstErr = err
 						}
 						errMu.Unlock()
+						if ctx.Err() != nil {
+							continue
+						}
 					}
 					probedCount.Add(1)
 					n.addProgress(1, 0)
@@ -199,9 +246,6 @@ func (n *NightlyValidator) runPass(ctx context.Context, sourceID string) (int, i
 		for _, cand := range candidates {
 			processed[cand.Resource.ID] = true
 		}
-		pageRetired := n.retireFailed(ctx, sourceID)
-		retired += pageRetired
-		n.addProgress(0, int64(pageRetired))
 		if firstErr != nil {
 			return int(probedCount.Load()), retired, firstErr
 		}
@@ -243,40 +287,37 @@ func (n *NightlyValidator) probeOne(ctx context.Context, runID string, cand doma
 	if fail == nil {
 		recordObservation(ctx, n.store, n.geo, cand.Resource.ID, ev, n.Now())
 	}
-	if err := n.store.RecordAttempt(ctx, ev, cand.Resource.ID, contextKey, detail); err != nil {
+	// A canceled pass must not write a synthetic timeout attempt or stale
+	// health. The probe was interrupted before a real proxy verdict.
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err := n.store.RecordAttemptAttributed(ctx, ev, cand.Resource.ID, contextKey,
+		detail, cand.Incarnation, cand.Offer.SourceID,
+		cand.SourceConfigVersion); err != nil {
 		return err
 	}
-	// Wrong/expired credentials are final evidence: retire immediately
-	// instead of waiting for the consecutive-failure threshold.
+	// Wrong/expired credentials are final evidence: the resource is deleted
+	// immediately, its sticky snapshots are dropped, and cached evidence is
+	// invalidated. Timeouts and refusals only feed the backoff below.
 	if fail != nil && fail.Kind == validation.FailAuth {
-		if count, err := n.store.RetireResource(ctx, cand.Resource.ID, "AUTH_FAILED", n.Now()); err == nil && count > 0 {
-			n.addProgress(0, int64(count))
+		fingerprint := domain.ConnectionFingerprint(n.cfg.IdentitySecret,
+			cand.Resource.Conn.Transport, cand.Resource.Conn.Host, cand.Resource.Conn.Port,
+			cand.Resource.Conn.Username, cand.Resource.Conn.Password)
+		retired, err := n.store.RetireResourceOwned(ctx, cand.Resource.ID,
+			cand.Incarnation, cand.Offer.SourceID, cand.SourceConfigVersion,
+			"AUTH_FAILED", n.Now())
+		if err == nil && retired > 0 {
+			_, _ = n.store.ExpireBindingsForFingerprints(ctx, []string{fingerprint}, n.Now())
+			_ = n.store.InvalidateEvidence(ctx, []string{fingerprint})
+			n.addProgress(0, 1)
 		}
 	}
 	if fail == nil || fail.Attributed() {
-		return n.health.Record(ctx, cand.Resource.ID, contextKey,
-			validation.ProfileHTTPSBasicV1, outcome)
+		return n.health.RecordScoped(ctx, cand.Resource.ID, contextKey,
+			validation.ProfileHTTPSBasicV1, outcome, cand.Incarnation)
 	}
 	return nil
-}
-
-// retireFailed removes resources that reached the consecutive-failure
-// threshold. Tombstones prevent the same uploaded list from reviving them.
-func (n *NightlyValidator) retireFailed(ctx context.Context, sourceID string) int {
-	if n.retireFailures <= 0 {
-		return 0
-	}
-	resourceIDs, err := n.store.RetireCandidates(ctx, n.retireFailures, "custom", sourceID)
-	if err != nil {
-		return 0
-	}
-	retired := 0
-	for _, resourceID := range resourceIDs {
-		if count, err := n.store.RetireResource(ctx, resourceID, "EVICTED", n.Now()); err == nil {
-			retired += count
-		}
-	}
-	return retired
 }
 
 // Run blocks until ctx is done, executing one full pass per day at hh:mm local.

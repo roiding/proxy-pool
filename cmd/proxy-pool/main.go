@@ -7,9 +7,11 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"proxypool/internal/api"
@@ -18,6 +20,14 @@ import (
 	"proxypool/internal/geoip"
 	"proxypool/internal/maintenance"
 	"proxypool/internal/storage/sqlite"
+	"proxypool/internal/usage"
+)
+
+// version is injected at build time via -ldflags "-X main.version=...".
+// The vcs.* variables come from the build's VCS stamping when available.
+var (
+	version = "dev"
+	vcsRef  string
 )
 
 func main() {
@@ -25,7 +35,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 	if *showVersion {
-		fmt.Println("proxy-pool v0.3.0-alpha")
+		fmt.Println(buildVersion())
 		return
 	}
 	cfg, err := config.Load(*configPath)
@@ -36,6 +46,13 @@ func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(log)
 
+	for _, path := range []string{cfg.LockPath, cfg.DatabasePath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			log.Error("create data dir failed", "path", path, "error", err)
+			os.Exit(1)
+		}
+	}
+
 	release, err := acquireSingletonLock(cfg.LockPath)
 	if err != nil {
 		log.Error("singleton lock failed", "error", err)
@@ -43,10 +60,6 @@ func main() {
 	}
 	defer release()
 
-	if err := os.MkdirAll(filepath.Dir(cfg.DatabasePath), 0o750); err != nil {
-		log.Error("create data dir failed", "error", err)
-		os.Exit(1)
-	}
 	db, err := sqlite.Open(cfg.DatabasePath, cfg.SQLiteCacheKiB)
 	if err != nil {
 		log.Error("open sqlite failed", "error", err)
@@ -54,7 +67,10 @@ func main() {
 	}
 	defer db.Close()
 	store := sqlite.New(db)
-	if err := store.Migrate(context.Background()); err != nil {
+	if _, err := store.MigrateWithOptions(context.Background(), sqlite.MigrateOptions{
+		IdentitySecret:    cfg.IdentitySecret,
+		LegacyMaxCooldown: cfg.D(cfg.MaxDownstreamCooldownMS),
+	}); err != nil {
 		log.Error("migrate failed", "error", err)
 		os.Exit(1)
 	}
@@ -67,6 +83,11 @@ func main() {
 	log.Info("judge endpoint", "path", "/v1/judge", "signed", cfg.JudgeSecret != "",
 		"trust_forwarded", cfg.JudgeTrustForwarded)
 	ingest := application.NewIngestService(store, cfg.IdentitySecret, cfg.AllowPrivateAddresses)
+	if err := ingest.ConfigureStaticCache(cfg.StaticCacheTTL(),
+		cfg.StaticCacheMaxEntries, cfg.StaticCacheMaxBytes); err != nil {
+		log.Error("static cache config failed", "error", err)
+		os.Exit(1)
+	}
 	keys := application.NewKeyService(store, cfg.IdentitySecret)
 	var geoResolver geoip.Resolver
 	if cfg.GeoIPDBPath != "" {
@@ -89,27 +110,67 @@ func main() {
 		application.CooldownConfig{Base: cfg.CooldownBase(), Max: cfg.CooldownMax(), Jitter: cfg.CooldownJitter},
 		probeSlots, geoResolver)
 	prewarm := application.NewPrewarmService(store, cfg, cfg.JudgeURL, rootCAs, probeSlots, geoResolver)
-
-	srv := &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           api.NewServer(cfg, log, acquire, ingest, leaseSvc, store, nightly, prewarm, keys).Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
+	// Traffic accounting owns its own tables on the same database handle;
+	// its scheduler never touches the acquire path.
+	usageSvc, err := usage.New(db, usage.Options{
+		MasterKey:        cfg.SecretEncryptionKey,
+		BarkURL:          cfg.BarkURL,
+		BarkEnabled:      false,
+		HuaweiAK:         cfg.HuaweiAccessKeyID,
+		HuaweiSK:         cfg.HuaweiSecretAccessKey,
+		HuaweiRegion:     cfg.HuaweiRegion,
+		HuaweiResourceID: cfg.HuaweiResourceID,
+		HuaweiPackageID:  cfg.HuaweiPackageID,
+		MonthlyTotalGB:   cfg.CloudUsageMonthlyTotalGB,
+		ThresholdPercent: int64(cfg.CloudUsageThresholdPercent),
+		CheckTime:        cfg.CloudUsageCheckTime,
+		Timezone:         cfg.CloudUsageTimezone,
+		BarkTimeout:      cfg.BarkTimeout(),
+		BarkRetries:      cfg.BarkMaxRetries,
+		CloudTimeout:     cfg.CloudUsageTimeout(),
+	})
+	if err != nil {
+		log.Error("usage service init failed", "error", err)
+		os.Exit(1)
 	}
 
+	// Server timeouts must exceed the largest acquire budget plus margin:
+	// a long-running acquire is write-bound, and a 30s cap would cut off
+	// legitimate 120s requests mid-response.
+	serverTimeout := cfg.MaxAcquireDeadline() + 10*time.Second
 	runCtx, stop := context.WithCancel(context.Background())
 	defer stop()
-	go maintenance.Run(runCtx, store, cfg.SweepInterval(), cfg.AttemptRetention(),
-		cfg.NightlyRetireFailures, log)
+	srv := newHTTPServer(cfg,
+		api.NewServer(cfg, log, acquire, ingest, leaseSvc, store, nightly, prewarm, keys,
+			api.WithUsage(usageSvc), api.WithVersion(buildVersion())).Handler(),
+		runCtx, serverTimeout)
+
+	var background sync.WaitGroup
+	background.Add(2)
+	go func() {
+		defer background.Done()
+		maintenance.Run(runCtx, store, cfg.SweepInterval(), cfg.AttemptRetention(),
+			cfg.NightlyRetireFailures, log)
+	}()
 	if cfg.NightlyValidationTime != "" {
-		go nightly.Run(runCtx, cfg.NightlyValidationTime, log)
+		background.Add(1)
+		go func() {
+			defer background.Done()
+			nightly.Run(runCtx, cfg.NightlyValidationTime, log)
+		}()
 	}
+	if _, err := prewarm.RecoverInterrupted(runCtx); err != nil {
+		log.Warn("prewarm job recovery failed", "error", err)
+	}
+	go func() {
+		defer background.Done()
+		usageSvc.Run(runCtx, log)
+	}()
 
 	httpErr := make(chan error, 1)
 	go func() {
-		log.Info("proxy-pool listening", "addr", cfg.ListenAddr, "db", cfg.DatabasePath)
+		log.Info("proxy-pool listening", "version", buildVersion(),
+			"addr", cfg.ListenAddr, "db", cfg.DatabasePath)
 		httpErr <- srv.ListenAndServe()
 	}()
 
@@ -123,11 +184,83 @@ func main() {
 		}
 	case <-sig:
 		log.Info("shutting down")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// Cancel background scheduling immediately, then drain HTTP and wait
+		// for in-flight jobs in parallel under one bounded deadline. Waiting
+		// for HTTP first would leave an expired context for job finalization.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
 		stop()
+		shutdownErr := make(chan struct {
+			name string
+			err  error
+		}, 3)
+		go func() {
+			shutdownErr <- struct {
+				name string
+				err  error
+			}{"http", srv.Shutdown(shutdownCtx)}
+		}()
+		go func() {
+			shutdownErr <- struct {
+				name string
+				err  error
+			}{"prewarm", prewarm.Shutdown(shutdownCtx)}
+		}()
+		go func() {
+			shutdownErr <- struct {
+				name string
+				err  error
+			}{"validation", nightly.Shutdown(shutdownCtx)}
+		}()
+		for i := 0; i < 3; i++ {
+			if result := <-shutdownErr; result.err != nil {
+				log.Warn("shutdown component did not finish", "component", result.name, "error", result.err)
+			}
+		}
+		joinBackground(shutdownCtx, &background, log)
 	}
+}
+
+// joinBackground keeps the process alive until cancelable scheduling loops
+// have returned. NightlyValidator.Shutdown only owns manual async passes, so
+// its synchronous scheduled Run needs this join as well.
+func joinBackground(ctx context.Context, background *sync.WaitGroup, log *slog.Logger) {
+	done := make(chan struct{})
+	go func() {
+		background.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		log.Warn("shutdown deadline passed before background joins")
+	}
+}
+
+// newHTTPServer binds the listener configuration. Request contexts derive
+// from the run context: stopping the run cancels in-flight requests (an
+// acquire with a deliberately slow judge included) so shutdown drains them
+// instead of waiting out their full deadline with a detached context.
+func newHTTPServer(cfg config.Config, handler http.Handler, baseCtx context.Context,
+	timeout time.Duration) *http.Server {
+	return &http.Server{
+		Addr:    cfg.ListenAddr,
+		Handler: handler,
+		BaseContext: func(net.Listener) context.Context {
+			return baseCtx
+		},
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       timeout,
+		WriteTimeout:      timeout,
+		IdleTimeout:       60 * time.Second,
+	}
+}
+
+func buildVersion() string {
+	if vcsRef != "" {
+		return version + " (" + vcsRef + ")"
+	}
+	return version
 }
 
 func buildRootCAs(pem string) (*x509.CertPool, error) {

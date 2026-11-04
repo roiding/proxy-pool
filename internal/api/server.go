@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 
 	"proxypool/internal/application"
@@ -14,57 +13,125 @@ import (
 	"proxypool/internal/domain"
 	"proxypool/internal/integrations/sites"
 	"proxypool/internal/storage/sqlite"
+	"proxypool/internal/usage"
 )
 
 type Server struct {
-	cfg      config.Config
-	log      *slog.Logger
-	acquire  *application.AcquireService
-	ingest   *application.IngestService
-	leases   *application.LeaseService
-	store    *sqlite.Store
-	nightly  *application.NightlyValidator
-	prewarm  *application.PrewarmService
-	keys     *application.KeyService
-	sessions *sessions
-	logins   *loginLimiter
+	cfg        config.Config
+	log        *slog.Logger
+	acquire    *application.AcquireService
+	ingest     *application.IngestService
+	leases     *application.LeaseService
+	store      *sqlite.Store
+	nightly    *application.NightlyValidator
+	prewarm    *application.PrewarmService
+	keys       *application.KeyService
+	uploadKeys *application.UploadKeyService
+	sessions   *sessions
+	logins     *loginLimiter
+	usage      *usage.Service
+	version    string
+}
+
+// ServerOption extends the server without breaking the established
+// constructor used across tests.
+type ServerOption func(*Server)
+
+// WithUsage wires the traffic-accounting service. Handlers answer 503 until
+// it is present.
+func WithUsage(u *usage.Service) ServerOption {
+	return func(s *Server) { s.usage = u }
+}
+
+// WithVersion injects the build version for the system panel.
+func WithVersion(v string) ServerOption {
+	return func(s *Server) { s.version = v }
+}
+
+// WithUploadKeys overrides the default upload-key service. NewServer always
+// activates upload-key capability on its own, so existing constructors gain
+// imports without a special option; tests may inject an isolated service.
+func WithUploadKeys(u *application.UploadKeyService) ServerOption {
+	return func(s *Server) { s.uploadKeys = u }
 }
 
 func NewServer(cfg config.Config, log *slog.Logger, acquire *application.AcquireService,
 	ingest *application.IngestService, leases *application.LeaseService, store *sqlite.Store,
 	nightly *application.NightlyValidator, prewarm *application.PrewarmService,
-	keys *application.KeyService) *Server {
-	return &Server{cfg: cfg, log: log, acquire: acquire, ingest: ingest,
+	keys *application.KeyService, opts ...ServerOption) *Server {
+	srv := &Server{cfg: cfg, log: log, acquire: acquire, ingest: ingest,
 		leases: leases, store: store, nightly: nightly, prewarm: prewarm,
-		keys: keys, sessions: newSessions(), logins: newLoginLimiter()}
+		keys:       keys,
+		uploadKeys: application.NewUploadKeyService(store, cfg.IdentitySecret),
+		sessions:   newSessions(cfg.AdminMaxSessions),
+		logins:     newLoginLimiter(cfg.AdminLoginWindow(), cfg.AdminLoginMaxAttempts)}
+	for _, opt := range opts {
+		opt(srv)
+	}
+	return srv
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	// The judge is the pool's own exit-IP oracle; its path is internal and
+	// deliberately not part of the /api/v1 downstream contract.
 	mux.Handle("GET /v1/judge", NewJudgeHandler(s.cfg.JudgeSecret, s.cfg.JudgeTrustForwarded))
 	mux.HandleFunc("GET /admin", s.handleAdminPage)
 	mux.HandleFunc("POST /admin/login", s.handleLogin)
 	mux.HandleFunc("POST /admin/logout", s.handleLogout)
-	mux.HandleFunc("GET /v1/admin/sources", s.handleSourcesOverview)
-	mux.HandleFunc("GET /v1/admin/sites", s.handleSitesCatalog)
-	mux.HandleFunc("GET /v1/admin/keys", s.handleListKeys)
-	mux.HandleFunc("POST /v1/admin/keys", s.handleCreateKey)
-	mux.HandleFunc("PATCH /v1/admin/keys/{id}", s.handleUpdateKey)
-	mux.HandleFunc("DELETE /v1/admin/keys/{id}", s.handleDeleteKey)
-	mux.HandleFunc("POST /v1/proxies/acquire", s.handleAcquire)
-	mux.HandleFunc("POST /v1/leases/{id}/release", s.handleRelease)
-	mux.HandleFunc("POST /v1/leases/{id}/feedback", s.handleFeedback)
-	mux.HandleFunc("POST /v1/sources", s.handleCreateSource)
-	mux.HandleFunc("DELETE /v1/sources/{id}", s.handleDeleteSource)
-	mux.HandleFunc("POST /v1/sources/{id}/imports", s.handleImport)
-	mux.HandleFunc("POST /v1/sources/{id}/fetch", s.handleFetchSource)
-	mux.HandleFunc("POST /v1/sources/{id}/validate", s.handleSourceValidate)
-	mux.HandleFunc("POST /v1/prewarm", s.handlePrewarm)
-	mux.HandleFunc("GET /v1/admin/stats", s.handleStats)
-	mux.HandleFunc("GET /v1/admin/validation", s.handleValidationStatus)
-	mux.HandleFunc("GET /v1/admin/prewarm", s.handlePrewarmStatus)
-	mux.HandleFunc("GET /v1/admin/daily", s.handleDailyStats)
+
+	// Downstream surface: everything a project key may reach.
+	mux.HandleFunc("POST /api/v1/proxies/acquire", s.handleAcquireV1)
+	mux.HandleFunc("POST /api/v1/prewarm", s.handlePrewarmV1)
+	mux.HandleFunc("GET /api/v1/jobs/{id}", s.handleGetJobV1)
+	mux.HandleFunc("POST /api/v1/jobs/{id}/cancel", s.handleJobCancelV1)
+	mux.HandleFunc("DELETE /api/v1/sessions/{id}", s.handleDeleteSessionV1)
+	mux.HandleFunc("POST /api/v1/leases/{id}/release", s.handleRelease)
+	mux.HandleFunc("POST /api/v1/leases/{id}/feedback", s.handleFeedback)
+
+	// Admin surface: projects, keys, sources, jobs, sessions, settings.
+	mux.HandleFunc("GET /api/v1/admin/projects", s.handleListProjects)
+	mux.HandleFunc("POST /api/v1/admin/projects", s.handleCreateProject)
+	mux.HandleFunc("GET /api/v1/admin/projects/{id}", s.handleGetProject)
+	mux.HandleFunc("PATCH /api/v1/admin/projects/{id}", s.handlePatchProject)
+	mux.HandleFunc("DELETE /api/v1/admin/projects/{id}", s.handleDeleteProject)
+	mux.HandleFunc("GET /api/v1/admin/projects/{id}/keys", s.handleListProjectKeys)
+	mux.HandleFunc("POST /api/v1/admin/projects/{id}/keys", s.handleCreateProjectKey)
+	mux.HandleFunc("GET /api/v1/admin/projects/{id}/sources", s.handleGetProjectSources)
+	mux.HandleFunc("PUT /api/v1/admin/projects/{id}/sources", s.handlePutProjectSources)
+	mux.HandleFunc("GET /api/v1/admin/keys", s.handleListKeys)
+	mux.HandleFunc("POST /api/v1/admin/keys", s.handleCreateKey)
+	mux.HandleFunc("PATCH /api/v1/admin/keys/{id}", s.handleUpdateKey)
+	mux.HandleFunc("DELETE /api/v1/admin/keys/{id}", s.handleDeleteKey)
+	mux.HandleFunc("GET /api/v1/admin/upload-keys", s.handleListUploadKeys)
+	mux.HandleFunc("POST /api/v1/admin/upload-keys", s.handleCreateUploadKey)
+	mux.HandleFunc("PATCH /api/v1/admin/upload-keys/{id}", s.handleUpdateUploadKey)
+	mux.HandleFunc("DELETE /api/v1/admin/upload-keys/{id}", s.handleDeleteUploadKey)
+	mux.HandleFunc("GET /api/v1/admin/adapters", s.handleAdaptersAdmin)
+	mux.HandleFunc("GET /api/v1/admin/sources", s.handleListSourcesV1)
+	mux.HandleFunc("POST /api/v1/admin/sources", s.handleCreateSourceV1)
+	mux.HandleFunc("GET /api/v1/admin/sources/{id}", s.handleGetSourceV1)
+	mux.HandleFunc("PATCH /api/v1/admin/sources/{id}", s.handlePatchSourceV1)
+	mux.HandleFunc("DELETE /api/v1/admin/sources/{id}", s.handleDeleteSourceV1)
+	mux.HandleFunc("GET /api/v1/admin/sites", s.handleSitesCatalog)
+	mux.HandleFunc("POST /api/v1/admin/sources/{id}/imports", s.handleImport)
+	mux.HandleFunc("POST /api/v1/sources/{source_id}/imports", s.handleImportV1)
+	mux.HandleFunc("GET /api/v1/sources/{source_id}/imports/{import_id}", s.handleGetImportV1)
+	mux.HandleFunc("POST /api/v1/admin/sources/{id}/fetch", s.handleFetchSource)
+	mux.HandleFunc("POST /api/v1/admin/sources/{id}/validate", s.handleSourceValidate)
+	mux.HandleFunc("GET /api/v1/admin/jobs", s.handleListJobsAdmin)
+	mux.HandleFunc("GET /api/v1/admin/sessions", s.handleListSessionsAdmin)
+	mux.HandleFunc("DELETE /api/v1/admin/projects/{id}/sessions/{sid}", s.handleAdminDeleteSession)
+	mux.HandleFunc("GET /api/v1/admin/stats", s.handleStats)
+	mux.HandleFunc("GET /api/v1/admin/validation", s.handleValidationStatus)
+	mux.HandleFunc("GET /api/v1/admin/daily", s.handleDailyStats)
+	mux.HandleFunc("GET /api/v1/admin/system", s.handleSystemAdmin)
+	mux.HandleFunc("GET /api/v1/admin/settings", s.handleGetSettingsV1)
+	mux.HandleFunc("PUT /api/v1/admin/settings", s.handlePutSettingsV1)
+	mux.HandleFunc("POST /api/v1/admin/settings/bark/test", s.handleBarkTestV1)
+	mux.HandleFunc("GET /api/v1/admin/usage", s.handleUsageStatusV1)
+	mux.HandleFunc("POST /api/v1/admin/usage/refresh", s.handleUsageRefreshV1)
 	return s.middleware(mux)
 }
 
@@ -100,7 +167,19 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 				writeError(sw, domain.Unauthenticated())
 				return
 			}
-			if !ident.Admin && !isDownstreamPath(r) {
+			// Path authorization is identity-aware: admins go everywhere,
+			// project keys only reach the delivery surface, and upload keys
+			// only reach their import surface.
+			allowed := false
+			switch {
+			case ident.Admin:
+				allowed = true
+			case ident.UploadKeyID != "":
+				allowed = isUploadKeyPath(ident, r)
+			default:
+				allowed = isDownstreamPath(r)
+			}
+			if !allowed {
 				writeError(sw, domain.E("ADMIN_REQUIRED", 403,
 					"this endpoint requires an admin session or the master API token"))
 				return
@@ -127,6 +206,9 @@ func bearerToken(r *http.Request) (string, bool) {
 	return h[len(prefix):], true
 }
 
+// timeNow is a seam for handlers; tests may replace it via the server.
+var timeNow = time.Now
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -151,37 +233,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (s *Server) handleAcquire(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 8192)
-	var req application.AcquireRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, domain.InvalidRequest("invalid JSON body: %v", err))
-		return
-	}
-	if raw := r.URL.Query().Get("cd"); raw != "" {
-		v, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil || v < 0 {
-			writeError(w, domain.InvalidRequest("cd query parameter must be a non-negative integer (seconds)"))
-			return
-		}
-		req.CDSeconds = &v
-	}
-	ident := identityFrom(r.Context())
-	req.ConsumerID = ident.ConsumerID
-	if req.CDSeconds == nil && ident.DefaultCooldownMS > 0 {
-		req.CooldownMS = ident.DefaultCooldownMS
-	}
-	result, derr := s.acquire.Acquire(r.Context(), req)
-	if derr != nil {
-		writeError(w, derr)
-		return
-	}
-	writeJSON(w, http.StatusOK, result)
-}
-
 func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
 	ident := identityFrom(r.Context())
-	ok, derr := s.leases.Release(r.Context(), r.PathValue("id"), ident.ConsumerID, ident.Admin)
+	ok, derr := s.leases.Release(r.Context(), r.PathValue("id"), ident.ownershipID(), ident.Admin)
 	if derr != nil {
 		writeError(w, derr)
 		return
@@ -202,7 +256,7 @@ func (s *Server) handleFeedback(w http.ResponseWriter, r *http.Request) {
 	}
 	ident := identityFrom(r.Context())
 	if derr := s.leases.Feedback(r.Context(), r.PathValue("id"), body.Outcome, body.Stage, body.Note,
-		ident.ConsumerID, ident.Admin); derr != nil {
+		ident.ownershipID(), ident.Admin); derr != nil {
 		writeError(w, derr)
 		return
 	}
@@ -333,18 +387,31 @@ func (s *Server) handleFetchSource(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 8<<20)
+	ident := identityFrom(r.Context())
+	r.Body = http.MaxBytesReader(w, r.Body, application.MaxImportBodyBytes)
 	content, err := readAll(r)
 	if err != nil {
 		writeError(w, domain.InvalidRequest("read import body: %v", err))
 		return
 	}
-	result, derr := s.ingest.ImportLines(r.Context(), r.PathValue("id"), content)
+	result, derr := s.ingest.ImportBatch(r.Context(), application.ImportRequest{
+		SourceID:       r.PathValue("id"),
+		UploaderID:     s.importUploaderID(ident),
+		UploadKeyID:    ident.UploadKeyID,
+		ContentType:    r.Header.Get("Content-Type"),
+		Body:           []byte(content),
+		IdempotencyKey: r.Header.Get("Idempotency-Key"),
+	})
 	if derr != nil {
 		writeError(w, derr)
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	status := http.StatusOK
+	if result.Applied {
+		status = http.StatusCreated
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, status, result)
 }
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {

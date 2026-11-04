@@ -3,16 +3,12 @@ package integration
 import (
 	"context"
 	"fmt"
-	"io"
-	"net/http"
-	"net/http/httptest"
+	"net"
 	"net/netip"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
-	"proxypool/internal/api"
 	"proxypool/internal/application"
 	"proxypool/internal/config"
 	"proxypool/internal/domain"
@@ -40,8 +36,9 @@ func TestSourceCircuitOpensAndSwitchesSources(t *testing.T) {
 
 	// Two consecutive attributed failures open the source circuit.
 	for i := 0; i < 2; i++ {
-		if _, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1}); derr == nil {
-			t.Fatalf("dead source acquire %d should fail", i)
+		res, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
+		if derr != nil || res.Delivered != 0 {
+			t.Fatalf("dead source must answer an empty result, not an error: %v %+v", derr, res)
 		}
 	}
 	overviews, err := e.store.SourcesOverview(context.Background())
@@ -53,11 +50,11 @@ func TestSourceCircuitOpensAndSwitchesSources(t *testing.T) {
 	}
 
 	// Let the per-resource cooldowns lapse. The source circuit still blocks
-	// selection, and the shortfall must say the source is cooling.
+	// selection; the empty result explains itself instead of erroring.
 	time.Sleep(20 * time.Millisecond)
-	_, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
-	if derr == nil || !strings.Contains(derr.Message, "cooling") {
-		t.Fatalf("expected cooling shortfall, got %v", derr)
+	cooling, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
+	if derr != nil || cooling.Delivered != 0 || cooling.ShortfallReason == "" {
+		t.Fatalf("open circuit must deliver an explained empty result: %v %+v", derr, cooling)
 	}
 
 	// A healthy source remains selectable: dynamic source switching.
@@ -248,7 +245,25 @@ func TestSourceCircuitBackoffAndReset(t *testing.T) {
 	}
 }
 
-func TestPrewarmReachesTarget(t *testing.T) {
+// waitForJob polls a prewarm job until it reaches a terminal state.
+func waitForJob(t *testing.T, p *application.PrewarmService, jobID string, timeout time.Duration) domain.Job {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		j, derr := p.GetJob(context.Background(), "", jobID)
+		if derr != nil {
+			t.Fatalf("get job: %v", derr)
+		}
+		if j.State != sqlite.JobPending && j.State != sqlite.JobRunning {
+			return j
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("prewarm job did not finish in time")
+	return domain.Job{}
+}
+
+func TestPrewarmJobReachesTarget(t *testing.T) {
 	j := startJudge(t)
 	good1 := startFakeProxy(t)
 	good2 := startFakeProxy(t)
@@ -262,17 +277,27 @@ func TestPrewarmReachesTarget(t *testing.T) {
 	if _, derr := e.ingest.ImportLines(context.Background(), "manual", content); derr != nil {
 		t.Fatalf("import: %v", derr)
 	}
-	status, err := e.prewarm.RunOnce(context.Background(), application.PrewarmRequest{
+	job, derr := e.prewarm.StartJob(context.Background(), "", application.PrewarmRequest{
 		Count: 2, DeadlineMS: 10000,
 	})
-	if err != nil {
-		t.Fatalf("prewarm: %v", err)
+	if derr != nil {
+		t.Fatalf("start job: %v", derr)
 	}
-	if status.Running || status.Ready != 2 || status.Probed < 2 || status.Probed > 3 {
-		t.Fatalf("prewarm status: %+v", status)
+	if job.ID == "" || job.ProjectID != sqlite.DefaultProjectID || job.Target != 2 {
+		t.Fatalf("persisted job: %+v", job)
 	}
-	if status.FinishedAt == nil {
-		t.Fatalf("prewarm did not finish: %+v", status)
+	final := waitForJob(t, e.prewarm, job.ID, 10*time.Second)
+	if final.State != sqlite.JobCompleted || final.Ready != 2 || final.StopReason != "target_met" {
+		t.Fatalf("prewarm job: %+v", final)
+	}
+	// Prewarm never delivers: the fixed project CD must be untouched.
+	conn := domain.Connection{Transport: domain.TransportHTTP,
+		Host: "127.0.0.1", Port: portOf(good1.URL)}
+	fp := e.acquire.FingerprintOf(conn)
+	blocked, err := e.store.ProjectCooldownBlocked(context.Background(),
+		sqlite.DefaultProjectID, time.Now(), []string{fp})
+	if err != nil || len(blocked) != 0 {
+		t.Fatalf("prewarm must not write project CD: %v %v", err, blocked)
 	}
 	acquired, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
 	if derr != nil || acquired.Delivered != 1 {
@@ -280,49 +305,111 @@ func TestPrewarmReachesTarget(t *testing.T) {
 	}
 }
 
-func TestPrewarmAPI(t *testing.T) {
+func TestPrewarmReadyIsCurrentNotCumulative(t *testing.T) {
 	j := startJudge(t)
-	good1 := startFakeProxy(t)
-	good2 := startFakeProxy(t)
+	good := startFakeProxy(t)
 	e := newEnv(t, j, nil)
 	if err := e.ingest.EnsureSource(context.Background(), "manual",
 		application.SourceConfig{DefaultTransport: domain.TransportHTTP, MaxPoolLeases: 1}, true); err != nil {
 		t.Fatalf("ensure source: %v", err)
 	}
-	content := fmt.Sprintf("http://127.0.0.1:%d\nhttp://127.0.0.1:%d\n",
-		portOf(good1.URL), portOf(good2.URL))
+	content := fmt.Sprintf("http://127.0.0.1:%d\nhttp://127.0.0.1:1\n", portOf(good.URL))
 	if _, derr := e.ingest.ImportLines(context.Background(), "manual", content); derr != nil {
 		t.Fatalf("import: %v", derr)
 	}
-	httpSrv := httptest.NewServer(api.NewServer(e.cfg, testLogger(),
-		e.acquire, e.ingest, e.leases, e.store, e.nightly, e.prewarm, e.keys).Handler())
-	defer httpSrv.Close()
-	req, _ := http.NewRequest(http.MethodPost, httpSrv.URL+"/v1/prewarm",
-		strings.NewReader(`{"count":2,"deadline_ms":10000}`))
-	req.Header.Set("Authorization", "Bearer "+e.cfg.APIToken)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("prewarm request: %v", err)
+	job, derr := e.prewarm.StartJob(context.Background(), "", application.PrewarmRequest{
+		Count: 2, DeadlineMS: 8000,
+	})
+	if derr != nil {
+		t.Fatalf("start job: %v", derr)
 	}
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("prewarm status=%d body=%s", resp.StatusCode, body)
+	final := waitForJob(t, e.prewarm, job.ID, 10*time.Second)
+	// A connection refusal is not proof of death, and repeated success
+	// against the one good proxy must never accumulate into Ready=2.
+	if final.State != sqlite.JobPartial || final.Ready != 1 {
+		t.Fatalf("ready must be the current valid count: %+v", final)
 	}
+}
 
-	var status application.PrewarmStatus
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
-		status = e.prewarm.Status()
-		if !status.Running && status.FinishedAt != nil {
-			break
+func TestPrewarmJobCancelStopsRun(t *testing.T) {
+	j := startJudge(t)
+	hang := startHangingProxy(t)
+	e := newEnv(t, j, nil)
+	if err := e.ingest.EnsureSource(context.Background(), "manual",
+		application.SourceConfig{DefaultTransport: domain.TransportHTTP, MaxPoolLeases: 1}, true); err != nil {
+		t.Fatalf("ensure source: %v", err)
+	}
+	if _, derr := e.ingest.ImportLines(context.Background(), "manual",
+		fmt.Sprintf("http://127.0.0.1:%d\n", portOf(hang))); derr != nil {
+		t.Fatalf("import: %v", derr)
+	}
+	job, derr := e.prewarm.StartJob(context.Background(), "", application.PrewarmRequest{
+		Count: 1, DeadlineMS: 9000,
+	})
+	if derr != nil {
+		t.Fatalf("start job: %v", derr)
+	}
+	if derr := e.prewarm.CancelJob(context.Background(), job.ID); derr != nil {
+		t.Fatalf("cancel job: %v", derr)
+	}
+	final := waitForJob(t, e.prewarm, job.ID, 5*time.Second)
+	if final.State != sqlite.JobCancelled || final.StopReason != sqlite.JobStopCanceled {
+		t.Fatalf("cancelled job: %+v", final)
+	}
+}
+
+func TestPrewarmRestartMarksJobsInterrupted(t *testing.T) {
+	j := startJudge(t)
+	e := newEnv(t, j, nil)
+	job := domain.Job{ID: domain.NewID("warm_"), ProjectID: sqlite.DefaultProjectID,
+		Kind: application.PrewarmJobKind, Target: 1}
+	if err := e.store.CreateJob(context.Background(), job, time.Now()); err != nil {
+		t.Fatalf("create orphan job: %v", err)
+	}
+	n, err := e.prewarm.RecoverInterrupted(context.Background())
+	if err != nil || n != 1 {
+		t.Fatalf("recover: %d %v", n, err)
+	}
+	got, derr := e.prewarm.GetJob(context.Background(), sqlite.DefaultProjectID, job.ID)
+	if derr != nil || got.State != sqlite.JobInterrupted ||
+		got.StopReason != "service_restart" {
+		t.Fatalf("interrupted job: %v %+v %v", derr, got, derr)
+	}
+	// Ownership: another project cannot read the job.
+	if _, derr := e.prewarm.GetJob(context.Background(), "proj-other", job.ID); derr == nil {
+		t.Fatal("cross-project job read must fail")
+	}
+}
+
+// startHangingProxy accepts TCP connections but never answers the CONNECT
+// request, so a probe only finishes when its context is cancelled.
+func startHangingProxy(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	done := make(chan struct{})
+	t.Cleanup(func() {
+		close(done)
+		ln.Close()
+	})
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				select {
+				case <-done:
+				case <-time.After(30 * time.Second):
+				}
+				c.Close()
+			}(conn)
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if status.Running || status.Ready != 2 {
-		t.Fatalf("prewarm API status: %+v", status)
-	}
+	}()
+	return ln.Addr().String()
 }
 
 type fakeGeo struct{ loc geoip.Location }
@@ -352,10 +439,14 @@ func TestGeoObservationAndCountryFilter(t *testing.T) {
 		t.Fatalf("release: %v", derr)
 	}
 
-	if _, derr := acq.Acquire(context.Background(), application.AcquireRequest{
+	mismatch, derr := acq.Acquire(context.Background(), application.AcquireRequest{
 		Count: 1, Filters: application.Filters{Countries: []string{"US"}},
-	}); derr == nil {
-		t.Fatal("country filter US should not match CN observation")
+	})
+	if derr != nil || mismatch.Delivered != 0 {
+		t.Fatalf("country mismatch must be an empty result, not an error: %v %+v", derr, mismatch)
+	}
+	if mismatch.ShortfallReason == "" {
+		t.Fatalf("shortfall reason: %q", mismatch.ShortfallReason)
 	}
 	acquired, derr = acq.Acquire(context.Background(), application.AcquireRequest{
 		Count: 1, Filters: application.Filters{Countries: []string{"cn"}},

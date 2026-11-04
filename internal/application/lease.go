@@ -26,11 +26,19 @@ func NewLeaseService(store *sqlite.Store, cfg CooldownConfig) *LeaseService {
 		health: &HealthRecorder{Store: store, Cooldown: cfg, Now: time.Now}, Now: time.Now}
 }
 
-// ownsLease denies callers that are neither admins nor the consumer the lease
-// was delivered to; the not-found error hides the lease's existence.
+// ownsLease denies callers that are neither admins nor the key the lease was
+// delivered to. Key-scoped ownership takes precedence; the CD subject
+// (project id) only matches leases that never had a key. The not-found error
+// hides the lease's existence.
 func ownsLease(row sqlite.LeaseRow, consumerID string, isAdmin bool) *domain.Error {
 	if isAdmin {
 		return nil
+	}
+	if row.KeyID != "" {
+		if consumerID != "" && consumerID == row.KeyID {
+			return nil
+		}
+		return domain.NotFound("lease")
 	}
 	if consumerID != "" && row.ConsumerID == consumerID {
 		return nil

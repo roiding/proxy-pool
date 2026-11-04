@@ -1,0 +1,316 @@
+{
+  "recorded_at": "2026-11-03T14:22:18.287624+08:00",
+  "local_code_acceptance": "PASS",
+  "release_acceptance": "NOT_COMPLETE_EXTERNAL_GATES",
+  "source_tree_sha256": "2f65b92b6ddbeaacdd5b648cff04b725f8aa4cc8637f1b9f510d68bb5e1ff893",
+  "head": "52b69c278f1a9668ae68cafd383b2496f5c54a7f",
+  "source_files": 128,
+  "gates": {
+    "expected_root_audits": 97,
+    "head": "52b69c278f1a9668ae68cafd383b2496f5c54a7f",
+    "source_files": 128,
+    "normal": {
+      "command": [
+        "go",
+        "test",
+        "-json",
+        "-timeout",
+        "120s",
+        "-count=1",
+        "./..."
+      ],
+      "exit_code": 0,
+      "root_audits": {
+        "pass": 97
+      },
+      "packages": [
+        {
+          "package": "proxypool/cmd/sitecheck",
+          "action": "skip",
+          "elapsed": 0
+        },
+        {
+          "package": "proxypool/cmd/proxy-pool",
+          "action": "pass",
+          "elapsed": 0.835
+        },
+        {
+          "package": "proxypool/internal/api",
+          "action": "pass",
+          "elapsed": 1.4689999999999999
+        },
+        {
+          "package": "proxypool/internal/geoip",
+          "action": "skip",
+          "elapsed": 0
+        },
+        {
+          "package": "proxypool/internal/config",
+          "action": "pass",
+          "elapsed": 1.8479999999999999
+        },
+        {
+          "package": "proxypool/internal/domain",
+          "action": "pass",
+          "elapsed": 1.63
+        },
+        {
+          "package": "proxypool/internal/application",
+          "action": "pass",
+          "elapsed": 2.69
+        },
+        {
+          "package": "proxypool/internal/integrations/custom",
+          "action": "pass",
+          "elapsed": 1.413
+        },
+        {
+          "package": "proxypool/internal/maintenance",
+          "action": "skip",
+          "elapsed": 0
+        },
+        {
+          "package": "proxypool/internal/integrations/scdn",
+          "action": "pass",
+          "elapsed": 0.984
+        },
+        {
+          "package": "proxypool/internal/integrations/sites",
+          "action": "pass",
+          "elapsed": 1.095
+        },
+        {
+          "package": "proxypool/internal/integrations/staticdl",
+          "action": "pass",
+          "elapsed": 1.314
+        },
+        {
+          "package": "proxypool/internal/policies",
+          "action": "pass",
+          "elapsed": 1.638
+        },
+        {
+          "package": "proxypool/internal/storage/sqlite",
+          "action": "pass",
+          "elapsed": 2.001
+        },
+        {
+          "package": "proxypool/internal/usage",
+          "action": "pass",
+          "elapsed": 1.448
+        },
+        {
+          "package": "proxypool/internal/validation",
+          "action": "pass",
+          "elapsed": 1.7269999999999999
+        },
+        {
+          "package": "proxypool/tests/integration",
+          "action": "pass",
+          "elapsed": 20.976
+        }
+      ],
+      "failures": [],
+      "log": "/tmp/proxy-pool-root-acceptance-20261103/final-full-tests.jsonl"
+    },
+    "race": {
+      "command": [
+        "go",
+        "test",
+        "-race",
+        "-json",
+        "-timeout",
+        "180s",
+        "-count=1",
+        "./..."
+      ],
+      "exit_code": 0,
+      "root_audits": {
+        "pass": 97
+      },
+      "packages": [
+        {
+          "package": "proxypool/cmd/sitecheck",
+          "action": "skip",
+          "elapsed": 0
+        },
+        {
+          "package": "proxypool/cmd/proxy-pool",
+          "action": "pass",
+          "elapsed": 1.6280000000000001
+        },
+        {
+          "package": "proxypool/internal/api",
+          "action": "pass",
+          "elapsed": 2.3810000000000002
+        },
+        {
+          "package": "proxypool/internal/geoip",
+          "action": "skip",
+          "elapsed": 0
+        },
+        {
+          "package": "proxypool/internal/config",
+          "action": "pass",
+          "elapsed": 2.786
+        },
+        {
+          "package": "proxypool/internal/domain",
+          "action": "pass",
+          "elapsed": 1.641
+        },
+        {
+          "package": "proxypool/internal/application",
+          "action": "pass",
+          "elapsed": 3.567
+        },
+        {
+          "package": "proxypool/internal/integrations/custom",
+          "action": "pass",
+          "elapsed": 1.415
+        },
+        {
+          "package": "proxypool/internal/maintenance",
+          "action": "skip",
+          "elapsed": 0
+        },
+        {
+          "package": "proxypool/internal/integrations/scdn",
+          "action": "pass",
+          "elapsed": 1.568
+        },
+        {
+          "package": "proxypool/internal/integrations/sites",
+          "action": "pass",
+          "elapsed": 1.7109999999999999
+        },
+        {
+          "package": "proxypool/internal/integrations/staticdl",
+          "action": "pass",
+          "elapsed": 1.702
+        },
+        {
+          "package": "proxypool/internal/policies",
+          "action": "pass",
+          "elapsed": 1.7970000000000002
+        },
+        {
+          "package": "proxypool/internal/storage/sqlite",
+          "action": "pass",
+          "elapsed": 2.257
+        },
+        {
+          "package": "proxypool/internal/usage",
+          "action": "pass",
+          "elapsed": 2.039
+        },
+        {
+          "package": "proxypool/internal/validation",
+          "action": "pass",
+          "elapsed": 2.412
+        },
+        {
+          "package": "proxypool/tests/integration",
+          "action": "pass",
+          "elapsed": 23.067
+        }
+      ],
+      "failures": [],
+      "log": "/tmp/proxy-pool-root-acceptance-20261103/final-full-race.jsonl"
+    },
+    "vet": "PASS",
+    "format": "PASS",
+    "whitespace": "PASS",
+    "embedded_js_syntax": "PASS (not visual browser acceptance)",
+    "protected_files": 16,
+    "staged_paths": 0,
+    "status": "PASS",
+    "changed_source_files": [],
+    "finished_at": "2026-11-03T14:09:40.261190+08:00"
+  },
+  "main_shutdown": {
+    "scope": "root independent local signed-HTTP judge; no external requests",
+    "run_directory": "/private/tmp/proxy-pool-root-acceptance-20261103/main-slow-1jc21d70",
+    "version": "audit-refactor-final-20261103 (52b69c2-dirty)",
+    "in_flight_shutdown_ms": 8.16,
+    "canceled_response": {
+      "status": 200,
+      "delivered": 0,
+      "reason": "VALIDATION_BUDGET_EXHAUSTED"
+    },
+    "released_claim_state": "EXPIRED",
+    "idle_shutdown_ms": 7.696,
+    "final_shutdown_ms": 3.739,
+    "status": "PASS",
+    "restart_count": 2,
+    "proof_refreshed": true,
+    "binding_version": 3,
+    "cd_rows": 1,
+    "ordinary_zero_cd_reason": "NO_ELIGIBLE_CANDIDATES",
+    "integrity": "ok",
+    "request_counts": {
+      "proxy": 3,
+      "judge": 3,
+      "forbidden_target": 0
+    },
+    "main_system_smoke": "PASS",
+    "embedded_html_smoke": "PASS",
+    "masked_settings_smoke": "PASS",
+    "password_and_cookie_smoke": "PASS"
+  },
+  "nightly_shutdown": {
+    "scope": "root independent real scheduled loop; local signed judge only",
+    "run_directory": "/private/tmp/proxy-pool-root-acceptance-20261103/nightly-slow-q65awgj8",
+    "scheduled_time": "14:15",
+    "version": "audit-refactor-final-20261103 (52b69c2-dirty)",
+    "in_flight_progress": {
+      "running": true,
+      "mode": "nightly",
+      "started_at": "2026-11-03T14:15:00.02928+08:00",
+      "probed": 0,
+      "retired": 0
+    },
+    "shutdown_ms": 4.003,
+    "scheduled_loop_finished_before_exit": true,
+    "integrity": "ok",
+    "request_counts": {
+      "requests": 1,
+      "nonlocal": 0
+    },
+    "status": "PASS"
+  },
+  "root_metrics_file": "core-load-root-final.json",
+  "source_manifest": "source-root-final.sha256",
+  "external_boundaries": {
+    "new_static_file": {
+      "offline_import_records": 1400,
+      "provider_expiry": "UNKNOWN",
+      "live_attempted": 12,
+      "live_indices": "0..11",
+      "live_pass": 0,
+      "live_auth_failed": 12,
+      "tls_handshakes_completed": 0,
+      "untested_records": 1388,
+      "whole_file_expiry_established": false
+    },
+    "catalog_and_scdn": {
+      "channels": 12,
+      "fetches": 29,
+      "tls_probes": 32,
+      "pass": 0,
+      "new_live_calls_this_closeout": 0
+    },
+    "huawei_reader": "UNAVAILABLE_OFFICIAL_PACKAGE_INTERFACE_UNVERIFIED",
+    "actual_cloud_bark_configuration": "NOT_CONFIGURED",
+    "browser_visual_acceptance": "NOT_COMPLETED; prior saved-origin policy denial, no bypass or retry this closeout",
+    "target_server_performance": "NOT_MEASURED; local six-concurrent-request fixtures are not Huawei/5000-stock acceptance"
+  },
+  "safety": {
+    "staged_paths": 0,
+    "commits_created": 0,
+    "deployments": 0,
+    "production_config_or_credentials_changed": false,
+    "production_database_changed": false,
+    "real_proxy_cloud_or_bark_calls_added_this_closeout": 0
+  }
+}

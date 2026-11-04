@@ -1,0 +1,131 @@
+{
+  "input": {
+    "bytes": 78278,
+    "sha256": "1c315c5240fc0c248bdd3de61a686b87d9bb95d1f75a09627aea3ccb484b9237",
+    "records": 1400,
+    "accepted": 1400,
+    "rejected": 0
+  },
+  "probe": {
+    "target": "example.com:443",
+    "method": "requested CONNECT/SOCKS5 transport followed by TLS 1.2+ handshake; certificate verification required",
+    "deadline_per_sample": "5s",
+    "target_application_http": false,
+    "verification_required": true,
+    "handshakes_completed": 0
+  },
+  "aggregate": {
+    "attempted": 12,
+    "pass": 0,
+    "fail": 12,
+    "failure_by_class": {
+      "AUTH": 12
+    }
+  },
+  "samples": [
+    {
+      "index": 0,
+      "transport": "http",
+      "result": "FAIL",
+      "class": "AUTH",
+      "latency_ms": 577
+    },
+    {
+      "index": 1,
+      "transport": "http",
+      "result": "FAIL",
+      "class": "AUTH",
+      "latency_ms": 524
+    },
+    {
+      "index": 2,
+      "transport": "http",
+      "result": "FAIL",
+      "class": "AUTH",
+      "latency_ms": 441
+    },
+    {
+      "index": 3,
+      "transport": "http",
+      "result": "FAIL",
+      "class": "AUTH",
+      "latency_ms": 440
+    },
+    {
+      "index": 4,
+      "transport": "http",
+      "result": "FAIL",
+      "class": "AUTH",
+      "latency_ms": 334
+    },
+    {
+      "index": 5,
+      "transport": "http",
+      "result": "FAIL",
+      "class": "AUTH",
+      "latency_ms": 440
+    },
+    {
+      "index": 6,
+      "transport": "http",
+      "result": "FAIL",
+      "class": "AUTH",
+      "latency_ms": 542
+    },
+    {
+      "index": 7,
+      "transport": "http",
+      "result": "FAIL",
+      "class": "AUTH",
+      "latency_ms": 333
+    },
+    {
+      "index": 8,
+      "transport": "http",
+      "result": "FAIL",
+      "class": "AUTH",
+      "latency_ms": 368
+    },
+    {
+      "index": 9,
+      "transport": "http",
+      "result": "FAIL",
+      "class": "AUTH",
+      "latency_ms": 533
+    },
+    {
+      "index": 10,
+      "transport": "http",
+      "result": "FAIL",
+      "class": "AUTH",
+      "latency_ms": 488
+    },
+    {
+      "index": 11,
+      "transport": "http",
+      "result": "FAIL",
+      "class": "AUTH",
+      "latency_ms": 563
+    }
+  ],
+  "failures": [
+    {
+      "class": "AUTH",
+      "count": 12,
+      "indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ]
+    }
+  ]
+}

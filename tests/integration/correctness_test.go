@@ -2,7 +2,6 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -33,32 +32,36 @@ func TestLeaseOwnershipEnforced(t *testing.T) {
 	proxy := startFakeProxy(t)
 	e := newEnv(t, j, nil)
 	e.importProxy(t, "manual", proxy.URL)
-	k := newKeyAPI(t, e)
-	defer k.srv.Close()
-	tokenA := k.createKey(t, "client-a", 0)
-	tokenB := k.createKey(t, "client-b", 0)
-
-	code, body := k.do(t, http.MethodPost, "/v1/proxies/acquire", tokenA, `{"count":1}`)
-	var result application.AcquireResult
-	if code != 200 || json.Unmarshal(body, &result) != nil || len(result.Items) != 1 {
-		t.Fatalf("acquire as A: %d %s", code, body)
+	keyA, _, err := e.keys.Create(context.Background(), "client-a", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyB, _, err := e.keys.Create(context.Background(), "client-b", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{
+		Count: 1, ConsumerID: keyA.ID,
+	})
+	if derr != nil || len(result.Items) != 1 {
+		t.Fatalf("acquire as A: %v %+v", derr, result)
 	}
 	leaseID := result.Items[0].LeaseID
 
 	// Client B must not see or change client A's lease.
 	for _, action := range []string{"release", "feedback"} {
-		payload := ""
-		if action == "feedback" {
-			payload = `{"outcome":"failure","stage":"business"}`
+		if action == "release" {
+			if _, derr := e.leases.Release(context.Background(), leaseID, keyB.ID, false); derr == nil || derr.Status != 404 {
+				t.Fatalf("client B release status=%v, want 404", derr)
+			}
+			continue
 		}
-		code, body = k.do(t, http.MethodPost, "/v1/leases/"+leaseID+"/"+action, tokenB, payload)
-		if code != 404 {
-			t.Fatalf("client B %s status=%d body=%s, want 404", action, code, body)
+		if derr := e.leases.Feedback(context.Background(), leaseID, "failure", "business", "", keyB.ID, false); derr == nil || derr.Status != 404 {
+			t.Fatalf("client B feedback status=%v, want 404", derr)
 		}
 	}
-	code, _ = k.do(t, http.MethodPost, "/v1/leases/"+leaseID+"/release", tokenA, "")
-	if code != 200 {
-		t.Fatalf("owner release status=%d", code)
+	if ok, derr := e.leases.Release(context.Background(), leaseID, keyA.ID, false); derr != nil || !ok {
+		t.Fatalf("owner release: ok=%v err=%v", ok, derr)
 	}
 }
 
@@ -120,8 +123,9 @@ func TestAcquireFailureRecordedAsFail(t *testing.T) {
 	defer proxy.Close()
 	e := newEnv(t, j, nil)
 	e.importProxy(t, "manual", proxy.URL)
-	if _, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1}); derr == nil {
-		t.Fatal("expected auth failure")
+	result, _ := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
+	if result.Delivered != 0 || result.ShortfallReason == "" {
+		t.Fatalf("auth failure must be an explained zero delivery: %+v", result)
 	}
 	stats, err := e.store.DailySourceStats(context.Background(),
 		time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
@@ -215,9 +219,9 @@ func TestDialGuardBlocksPrivateHost(t *testing.T) {
 	proxy := startFakeProxy(t)
 	e := newEnv(t, j, func(c *config.Config) { c.AllowPrivateAddresses = false })
 	e.importProxy(t, "manual", fmt.Sprintf("http://localhost:%d", portOf(proxy.URL)))
-	if _, derr := e.acquire.Acquire(context.Background(),
-		application.AcquireRequest{Count: 1}); derr == nil {
-		t.Fatal("private host behind a DNS name must not be dialable")
+	result, _ := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
+	if result.Delivered != 0 || result.ShortfallReason == "" {
+		t.Fatalf("private host must be an explained zero delivery: %+v", result)
 	}
 }
 
@@ -248,10 +252,11 @@ func TestCountryFilterColdStartAndFreshMatch(t *testing.T) {
 		}
 		acq := application.NewAcquireService(e.store, e.cfg, e.cfg.JudgeURL, j.certPool(),
 			make(chan struct{}, e.cfg.ProbeSlots), fakeGeo{loc: geoip.Location{CountryCode: "US"}})
-		if _, derr := acq.Acquire(ctx, application.AcquireRequest{
+		result, _ := acq.Acquire(ctx, application.AcquireRequest{
 			Count: 1, Filters: application.Filters{Countries: []string{"CN"}},
-		}); derr == nil {
-			t.Fatal("stale CN observation must not satisfy countries=[CN] when fresh exit is US")
+		})
+		if result.Delivered != 0 || result.ShortfallReason == "" {
+			t.Fatalf("stale CN observation must not satisfy countries=[CN] when fresh exit is US: %+v", result)
 		}
 	})
 }
@@ -282,15 +287,19 @@ func TestCooldownWindowTimestampOrdering(t *testing.T) {
 	ctx := context.Background()
 	base := time.Now().UTC().Truncate(time.Second)
 	cand := firstCandidate(t, e, base)
-	if err := e.store.RecordConsumerDeliveries(ctx, "client-a", []string{cand.Resource.ID}, base); err != nil {
+	fp := e.acquire.FingerprintOf(cand.Resource.Conn)
+	if err := e.store.RecordProjectDeliveries(ctx, "proj-cd", 5*time.Second, base,
+		[]string{fp}); err != nil {
 		t.Fatal(err)
 	}
-	now := base.Add(5500 * time.Millisecond)
-	cands, err := e.store.SelectCandidates(ctx, sqlite.SelectionFilters{
-		Profile: "https_basic_v1", Now: now, UsefulCutoff: now,
-		ConsumerID: "client-a", ConsumerCooldown: 5 * time.Second, Limit: 1,
-	})
-	if err != nil || len(cands) != 1 {
-		t.Fatalf("5s CD still excludes the proxy after 5.5s: err=%v cands=%d", err, len(cands))
+	blocked, err := e.store.ProjectCooldownBlocked(ctx, "proj-cd",
+		base.Add(time.Second), []string{fp})
+	if err != nil || len(blocked) != 1 {
+		t.Fatalf("window must block inside its span: %+v err=%v", blocked, err)
+	}
+	blocked, err = e.store.ProjectCooldownBlocked(ctx, "proj-cd",
+		base.Add(5500*time.Millisecond), []string{fp})
+	if err != nil || len(blocked) != 0 {
+		t.Fatalf("expired window must release the fingerprint: %+v err=%v", blocked, err)
 	}
 }

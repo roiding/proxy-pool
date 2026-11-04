@@ -55,7 +55,7 @@ func vendorServer(t *testing.T, status int, body string) *httptest.Server {
 
 func TestFetchParsesAndMapsEntries(t *testing.T) {
 	srv := vendorServer(t, 200, `{"code":200,"message":"success","data":{"proxies":[
-		"203.0.113.10:8080","203.0.113.11:3128","203.0.113.10:8080","203.0.113.12:1080", ""
+		"8.8.8.8:8080","8.8.4.4:3128","8.8.8.8:8080","9.9.9.9:1080", ""
 	],"count":4}}`)
 	defer srv.Close()
 	res, err := Fetch(context.Background(), srv.Client(), srv.URL,
@@ -69,7 +69,7 @@ func TestFetchParsesAndMapsEntries(t *testing.T) {
 	if res.Entries[0].Transport != domain.TransportHTTP {
 		t.Fatalf("https must map to the http transport: %+v", res.Entries[0])
 	}
-	if res.Entries[0].Host != "203.0.113.10" || res.Entries[0].Port != 8080 {
+	if res.Entries[0].Host != "8.8.8.8" || res.Entries[0].Port != 8080 {
 		t.Fatalf("entry: %+v", res.Entries[0])
 	}
 	if res.Errors[0].Line != 5 {
@@ -78,7 +78,7 @@ func TestFetchParsesAndMapsEntries(t *testing.T) {
 }
 
 func TestFetchSocks5Mapping(t *testing.T) {
-	srv := vendorServer(t, 200, `{"code":200,"message":"success","data":{"proxies":["203.0.113.9:1080"],"count":1}}`)
+	srv := vendorServer(t, 200, `{"code":200,"message":"success","data":{"proxies":["9.9.9.9:1080"],"count":1}}`)
 	defer srv.Close()
 	res, err := Fetch(context.Background(), srv.Client(), srv.URL, Config{Protocol: "socks5"}, false)
 	if err != nil || len(res.Entries) != 1 || res.Entries[0].Transport != domain.TransportSOCKS5 {
@@ -89,14 +89,14 @@ func TestFetchSocks5Mapping(t *testing.T) {
 func TestFetchRejectsBadRowsAndPrivateAddresses(t *testing.T) {
 	srv := vendorServer(t, 200, `{"code":200,"message":"success","data":{"proxies":[
 		"10.0.0.1:8080","127.0.0.1:8080","203.0.113.1","203.0.113.2:0","203.0.113.3:notaport",
-		"2001:db8::1:8080","[2001:db8::5]:8080","203.0.113.4:70000","not_a_host!:8080"
+		"2001:db8::1:8080","[2606:4700::5]:8080","203.0.113.4:70000","not_a_host!:8080"
 	],"count":9}}`)
 	defer srv.Close()
 	res, err := Fetch(context.Background(), srv.Client(), srv.URL, Config{Protocol: "http"}, false)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
-	if len(res.Entries) != 1 || res.Entries[0].Host != "2001:db8::5" || res.Entries[0].Port != 8080 {
+	if len(res.Entries) != 1 || res.Entries[0].Host != "2606:4700::5" || res.Entries[0].Port != 8080 {
 		t.Fatalf("only bracketed IPv6 should survive: %+v errors=%+v", res.Entries, res.Errors)
 	}
 	if len(res.Errors) != 8 {

@@ -2,7 +2,9 @@ package integration
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -167,7 +169,9 @@ func newEnvWithConfig(t *testing.T, cfg config.Config, rootCAs *x509.CertPool) *
 	}
 	t.Cleanup(func() { db.Close() })
 	store := sqlite.New(db)
-	if err := store.Migrate(context.Background()); err != nil {
+	if _, err := store.MigrateWithOptions(context.Background(), sqlite.MigrateOptions{
+		IdentitySecret: cfg.IdentitySecret, LegacyMaxCooldown: cfg.D(cfg.MaxDownstreamCooldownMS),
+	}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	probeSlots := make(chan struct{}, cfg.ProbeSlots)
@@ -185,7 +189,15 @@ func newEnvWithConfig(t *testing.T, cfg config.Config, rootCAs *x509.CertPool) *
 			probeSlots, nil),
 		keys: application.NewKeyService(store, cfg.IdentitySecret),
 	}
+	if err := e.ingest.ConfigureStaticCache(cfg.StaticCacheTTL(),
+		cfg.StaticCacheMaxEntries, cfg.StaticCacheMaxBytes); err != nil {
+		t.Fatalf("configure static cache: %v", err)
+	}
 	e.acquire.Refiller = e.ingest
+	if rootCAs != nil {
+		digest := sha256.Sum256([]byte(cfg.JudgeCAPem))
+		e.acquire.SetTargetRootCAs(rootCAs, hex.EncodeToString(digest[:]))
+	}
 	return e
 }
 
@@ -238,19 +250,20 @@ func TestAcquireValidatesBeforeDelivery(t *testing.T) {
 	}
 }
 
-func TestExclusiveLeaseBlocksAndReleaseUnblocks(t *testing.T) {
+func TestReleaseDoesNotClearProjectCooldown(t *testing.T) {
 	j := startJudge(t)
 	proxy := startFakeProxy(t)
 	e := newEnv(t, j, nil)
 	e.importProxy(t, "manual", fmt.Sprintf("http://127.0.0.1:%d", portOf(proxy.URL)))
 
-	first, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
+	req := application.AcquireRequest{Count: 1, ConsumerID: "audit-release", CooldownMS: 60000}
+	first, derr := e.acquire.Acquire(context.Background(), req)
 	if derr != nil {
 		t.Fatalf("first acquire: %v", derr)
 	}
-	_, derr = e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
-	if derr == nil || derr.Code != "NO_ELIGIBLE_CANDIDATES" {
-		t.Fatalf("second acquire error = %v, want NO_ELIGIBLE_CANDIDATES", derr)
+	blocked, derr := e.acquire.Acquire(context.Background(), req)
+	if derr != nil || blocked.Delivered != 0 || blocked.Missing != 1 {
+		t.Fatalf("second acquire must be an empty CD result: %v %+v", derr, blocked)
 	}
 	if ok, derr := e.leases.Release(context.Background(), first.Items[0].LeaseID, "master", true); derr != nil || !ok {
 		t.Fatalf("release: ok=%v err=%v", ok, derr)
@@ -258,9 +271,9 @@ func TestExclusiveLeaseBlocksAndReleaseUnblocks(t *testing.T) {
 	if ok, derr := e.leases.Release(context.Background(), first.Items[0].LeaseID, "master", true); derr != nil || ok {
 		t.Fatalf("idempotent release: ok=%v err=%v", ok, derr)
 	}
-	second, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
-	if derr != nil || second.Delivered != 1 {
-		t.Fatalf("acquire after release: %v %+v", derr, second)
+	second, derr := e.acquire.Acquire(context.Background(), req)
+	if derr != nil || second.Delivered != 0 {
+		t.Fatalf("release must not cancel the committed CD: %v %+v", derr, second)
 	}
 }
 
@@ -269,13 +282,13 @@ func TestFailingProxyCooldownsInsteadOfRetrying(t *testing.T) {
 	e := newEnv(t, j, nil)
 	e.importProxy(t, "manual", "http://127.0.0.1:1")
 
-	_, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
-	if derr == nil || derr.Code != "INSUFFICIENT_VALIDATED_RESOURCES" {
-		t.Fatalf("first acquire error = %v, want INSUFFICIENT_VALIDATED_RESOURCES", derr)
+	first, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
+	if derr != nil || first.Delivered != 0 || first.ShortfallReason == "" {
+		t.Fatalf("first acquire must explain its shortfall: %v %+v", derr, first)
 	}
-	_, derr = e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
-	if derr == nil || derr.Code != "NO_ELIGIBLE_CANDIDATES" {
-		t.Fatalf("second acquire error = %v, want NO_ELIGIBLE_CANDIDATES (cooldown)", derr)
+	second, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
+	if derr != nil || second.Delivered != 0 {
+		t.Fatalf("cooling candidate must not be delivered: %v %+v", derr, second)
 	}
 }
 
@@ -286,9 +299,9 @@ func TestJudgeOutageIsInconclusiveAndNotAttributed(t *testing.T) {
 	e.importProxy(t, "manual", fmt.Sprintf("http://127.0.0.1:%d", portOf(proxy.URL)))
 
 	j.healthy.Store(false)
-	_, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
-	if derr == nil || derr.Code != "VALIDATION_INFRA_UNAVAILABLE" {
-		t.Fatalf("judge outage error = %v, want VALIDATION_INFRA_UNAVAILABLE", derr)
+	missing, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
+	if derr != nil || missing.Delivered != 0 || missing.ShortfallReason != "VALIDATION_INFRA_UNAVAILABLE" {
+		t.Fatalf("judge outage must be an inconclusive shortfall: %v %+v", derr, missing)
 	}
 	j.healthy.Store(true)
 	result, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
@@ -310,10 +323,12 @@ func TestConcurrentAcquireSingleWinner(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
+			result, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{
+				Count: 1, ConsumerID: "audit-concurrent", CooldownMS: 60000,
+			})
 			mu.Lock()
 			defer mu.Unlock()
-			if derr == nil {
+			if derr == nil && result.Delivered == 1 {
 				wins++
 			} else {
 				losses++
@@ -333,24 +348,31 @@ func TestConcurrentAcquireSingleWinner(t *testing.T) {
 	}
 }
 
-func TestLeaseExpirySweepReclaimsSlot(t *testing.T) {
+func TestLeaseExpirySweepPreservesProjectCooldown(t *testing.T) {
 	j := startJudge(t)
 	proxy := startFakeProxy(t)
 	e := newEnv(t, j, func(c *config.Config) { c.LeaseTTLMS = 300; c.MinUsableMS = 100 })
 	e.importProxy(t, "manual", fmt.Sprintf("http://127.0.0.1:%d", portOf(proxy.URL)))
 
-	if _, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1}); derr != nil {
+	req := application.AcquireRequest{Count: 1, ConsumerID: "audit-sweep", CooldownMS: 60000}
+	if result, derr := e.acquire.Acquire(context.Background(), req); derr != nil || result.Delivered != 1 {
 		t.Fatalf("first acquire: %v", derr)
 	}
-	_, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
-	if derr == nil {
-		t.Fatal("second acquire should fail while lease is active")
+	blocked, derr := e.acquire.Acquire(context.Background(), req)
+	if derr != nil || blocked.Delivered != 0 {
+		t.Fatalf("second acquire must respect CD: %v %+v", derr, blocked)
 	}
 	time.Sleep(400 * time.Millisecond)
 	maintenance.RunOnce(context.Background(), e.store, e.cfg.AttemptRetention(), 0, testLogger())
-	result, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
-	if derr != nil || result.Delivered != 1 {
-		t.Fatalf("acquire after sweep: %v %+v", derr, result)
+	result, derr := e.acquire.Acquire(context.Background(), req)
+	if derr != nil || result.Delivered != 0 {
+		t.Fatalf("lease expiry must not clear CD: %v %+v", derr, result)
+	}
+	other, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{
+		Count: 1, ConsumerID: "audit-other-project",
+	})
+	if derr != nil || other.Delivered != 1 {
+		t.Fatalf("another project's independent CD must remain usable: %v %+v", derr, other)
 	}
 }
 
@@ -517,7 +539,7 @@ func TestAPIEndToEnd(t *testing.T) {
 		e.acquire, e.ingest, e.leases, e.store, e.nightly, e.prewarm, e.keys).Handler())
 	defer httpSrv.Close()
 
-	resp, err := http.Post(httpSrv.URL+"/v1/proxies/acquire", "application/json", strings.NewReader(`{"count":1}`))
+	resp, err := http.Post(httpSrv.URL+"/api/v1/proxies/acquire", "application/json", strings.NewReader(`{"count":1}`))
 	if err != nil {
 		t.Fatalf("unauthenticated request: %v", err)
 	}
@@ -527,8 +549,8 @@ func TestAPIEndToEnd(t *testing.T) {
 		t.Fatalf("unauthenticated status = %d body %s", resp.StatusCode, body)
 	}
 
-	req, _ := http.NewRequest(http.MethodPost, httpSrv.URL+"/v1/proxies/acquire",
-		strings.NewReader(`{"count":1,"profile":"https_basic_v1"}`))
+	req, _ := http.NewRequest(http.MethodPost, httpSrv.URL+"/api/v1/proxies/acquire",
+		strings.NewReader(`{"count":1}`))
 	req.Header.Set("Authorization", "Bearer "+e.cfg.APIToken)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err = http.DefaultClient.Do(req)
@@ -548,9 +570,9 @@ func TestAPIEndToEnd(t *testing.T) {
 				Host string `json:"host"`
 				Port int    `json:"port"`
 			} `json:"connection"`
-			Validation struct {
-				ObservedExitIP string `json:"observed_exit_ip"`
-			} `json:"validation"`
+			Observed struct {
+				ExitIP string `json:"exit_ip"`
+			} `json:"observed"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -560,12 +582,21 @@ func TestAPIEndToEnd(t *testing.T) {
 		t.Fatalf("acquire result: %s", body)
 	}
 	if result.Items[0].Connection.Port != portOf(proxy.URL) ||
-		result.Items[0].Validation.ObservedExitIP != "203.0.113.7" {
+		result.Items[0].Observed.ExitIP != "203.0.113.7" {
 		t.Fatalf("item payload: %s", body)
+	}
+	row, err := e.store.GetLease(context.Background(), result.Items[0].LeaseID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proof domain.Evidence
+	if err := json.Unmarshal([]byte(row.ValidationJSON), &proof); err != nil ||
+		proof.Outcome != "PASS" || proof.ObservedExitIP != result.Items[0].Observed.ExitIP {
+		t.Fatalf("canonical observation is not backed by committed PASS evidence: err=%v", err)
 	}
 
 	release, _ := http.NewRequest(http.MethodPost,
-		fmt.Sprintf("%s/v1/leases/%s/release", httpSrv.URL, result.Items[0].LeaseID), nil)
+		fmt.Sprintf("%s/api/v1/leases/%s/release", httpSrv.URL, result.Items[0].LeaseID), nil)
 	release.Header.Set("Authorization", "Bearer "+e.cfg.APIToken)
 	resp, err = http.DefaultClient.Do(release)
 	if err != nil {
@@ -578,7 +609,7 @@ func TestAPIEndToEnd(t *testing.T) {
 	}
 }
 
-func TestNightlyValidationRetiresDeadProxies(t *testing.T) {
+func TestNightlyValidationKeepsUncertainFailures(t *testing.T) {
 	j := startJudge(t)
 	e := newEnv(t, j, func(c *config.Config) { c.NightlyRetireFailures = 1 })
 	goodProxy := startFakeProxy(t)
@@ -595,22 +626,22 @@ func TestNightlyValidationRetiresDeadProxies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nightly run: %v", err)
 	}
-	if probed != 2 || retired != 1 {
-		t.Fatalf("probed=%d retired=%d, want 2/1", probed, retired)
+	if probed != 2 || retired != 0 {
+		t.Fatalf("connection refusal is not proof of permanent death: probed=%d retired=%d", probed, retired)
 	}
 	stats, err := e.store.Stats(context.Background())
 	if err != nil {
 		t.Fatalf("stats: %v", err)
 	}
-	if stats.HealthPass != 1 || stats.HealthFail != 0 || stats.EnabledOffers != 1 ||
-		stats.Resources != 1 {
-		t.Fatalf("stats after retirement: %+v", stats)
+	if stats.HealthPass != 1 || stats.HealthFail != 1 || stats.EnabledOffers != 2 ||
+		stats.Resources != 2 {
+		t.Fatalf("uncertain candidate must remain available for later retest: %+v", stats)
 	}
 
-	// Re-uploading the same list must not revive the retired proxy (tombstone).
+	// Re-uploading must merge without resetting either candidate's health.
 	reimport, derr := e.ingest.ImportLines(context.Background(), "manual", content)
-	if derr != nil || reimport.Skipped != 1 || reimport.Updated != 1 || reimport.Added != 0 {
-		t.Fatalf("re-upload after retirement: %v %+v", derr, reimport)
+	if derr != nil || reimport.Skipped != 0 || reimport.Updated != 2 || reimport.Added != 0 {
+		t.Fatalf("re-upload after uncertainty: %v %+v", derr, reimport)
 	}
 
 	// The surviving good proxy must still be acquirable.
@@ -662,7 +693,7 @@ func TestDeleteSourceViaAPI(t *testing.T) {
 	defer httpSrv.Close()
 
 	del := func(id string) (int, []byte) {
-		req, _ := http.NewRequest(http.MethodDelete, httpSrv.URL+"/v1/sources/"+id, nil)
+		req, _ := http.NewRequest(http.MethodDelete, httpSrv.URL+"/api/v1/admin/sources/"+id, nil)
 		req.Header.Set("Authorization", "Bearer "+e.cfg.APIToken)
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -739,8 +770,8 @@ func TestSocks5AuthFailureRetiresImmediately(t *testing.T) {
 		"socks5://wronguser:wrongpass@"+p.addr()+"\n"); derr != nil {
 		t.Fatalf("import: %v", derr)
 	}
-	if _, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1}); derr == nil {
-		t.Fatal("acquire with wrong socks5 credentials should fail")
+	if result, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1}); derr != nil || result.Delivered != 0 {
+		t.Fatalf("wrong socks5 credentials must not be delivered: %v %+v", derr, result)
 	}
 	stats, err := e.store.Stats(context.Background())
 	if err != nil {
@@ -749,14 +780,14 @@ func TestSocks5AuthFailureRetiresImmediately(t *testing.T) {
 	if stats.EnabledOffers != 0 || stats.Resources != 0 {
 		t.Fatalf("auth-failed socks5 offer not retired: %+v", stats)
 	}
-	// The same dead proxy must not be revived by re-upload.
+	// There is no persistent blacklist; a later upload creates an unverified candidate.
 	res, derr := e.ingest.ImportLines(context.Background(), "manual",
 		"socks5://wronguser:wrongpass@"+p.addr()+"\n")
 	if derr != nil {
 		t.Fatalf("re-import: %v", derr)
 	}
-	if res.Added != 0 || res.Skipped != 1 {
-		t.Fatalf("tombstone did not block revival: %+v", res)
+	if res.Added != 1 || res.Skipped != 0 {
+		t.Fatalf("a deleted connection must not leave a tombstone: %+v", res)
 	}
 }
 
@@ -774,11 +805,11 @@ func TestAdminPageAndSourcesAPI(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "控制台") {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "proxy-pool 管理台") {
 		t.Fatalf("admin page status=%d", resp.StatusCode)
 	}
 
-	req, _ := http.NewRequest(http.MethodGet, httpSrv.URL+"/v1/admin/sources", nil)
+	req, _ := http.NewRequest(http.MethodGet, httpSrv.URL+"/api/v1/admin/sources", nil)
 	req.Header.Set("Authorization", "Bearer "+e.cfg.APIToken)
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -801,7 +832,7 @@ func TestAdminAuthSessionAndDailyStats(t *testing.T) {
 	defer httpSrv.Close()
 	client := &http.Client{}
 
-	resp, err := client.Get(httpSrv.URL + "/v1/admin/stats")
+	resp, err := client.Get(httpSrv.URL + "/api/v1/admin/stats")
 	if err != nil {
 		t.Fatalf("stats without auth: %v", err)
 	}
@@ -838,7 +869,7 @@ func TestAdminAuthSessionAndDailyStats(t *testing.T) {
 		t.Fatal("session cookie missing")
 	}
 
-	req, _ := http.NewRequest(http.MethodGet, httpSrv.URL+"/v1/admin/stats", nil)
+	req, _ := http.NewRequest(http.MethodGet, httpSrv.URL+"/api/v1/admin/stats", nil)
 	req.Header.Set("Cookie", session.Name+"="+session.Value)
 	resp, err = client.Do(req)
 	if err != nil {
@@ -850,7 +881,7 @@ func TestAdminAuthSessionAndDailyStats(t *testing.T) {
 	}
 
 	// Cookie mutations need the CSRF header; bearer requests do not.
-	req, _ = http.NewRequest(http.MethodPost, httpSrv.URL+"/v1/sources",
+	req, _ = http.NewRequest(http.MethodPost, httpSrv.URL+"/api/v1/admin/sources",
 		strings.NewReader(`{"source_id":"manual2","parser_type":"lines_v1"}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Cookie", session.Name+"="+session.Value)
@@ -864,7 +895,7 @@ func TestAdminAuthSessionAndDailyStats(t *testing.T) {
 	}
 
 	// Run an acquisition so today's validation attempts exist, then check rates.
-	acqReq, _ := http.NewRequest(http.MethodPost, httpSrv.URL+"/v1/proxies/acquire",
+	acqReq, _ := http.NewRequest(http.MethodPost, httpSrv.URL+"/api/v1/proxies/acquire",
 		strings.NewReader(`{"count":1}`))
 	acqReq.Header.Set("Authorization", "Bearer "+e.cfg.APIToken)
 	acqReq.Header.Set("Content-Type", "application/json")
@@ -877,7 +908,7 @@ func TestAdminAuthSessionAndDailyStats(t *testing.T) {
 		t.Fatalf("acquire status=%d", resp.StatusCode)
 	}
 
-	req, _ = http.NewRequest(http.MethodGet, httpSrv.URL+"/v1/admin/daily", nil)
+	req, _ = http.NewRequest(http.MethodGet, httpSrv.URL+"/api/v1/admin/daily", nil)
 	req.Header.Set("Cookie", session.Name+"="+session.Value)
 	resp, err = client.Do(req)
 	if err != nil {
@@ -897,7 +928,7 @@ func TestAdminAuthSessionAndDailyStats(t *testing.T) {
 		t.Fatalf("logout: %v", err)
 	}
 	resp.Body.Close()
-	req, _ = http.NewRequest(http.MethodGet, httpSrv.URL+"/v1/admin/stats", nil)
+	req, _ = http.NewRequest(http.MethodGet, httpSrv.URL+"/api/v1/admin/stats", nil)
 	req.Header.Set("Cookie", session.Name+"="+session.Value)
 	resp, err = client.Do(req)
 	if err != nil {
@@ -925,7 +956,7 @@ func TestManualSourceValidationViaAPI(t *testing.T) {
 		e.acquire, e.ingest, e.leases, e.store, e.nightly, e.prewarm, e.keys).Handler())
 	defer httpSrv.Close()
 
-	validate, _ := http.NewRequest(http.MethodPost, httpSrv.URL+"/v1/sources/nope/validate", nil)
+	validate, _ := http.NewRequest(http.MethodPost, httpSrv.URL+"/api/v1/admin/sources/nope/validate", nil)
 	validate.Header.Set("Authorization", "Bearer "+e.cfg.APIToken)
 	resp, err := http.DefaultClient.Do(validate)
 	if err != nil {
@@ -936,7 +967,7 @@ func TestManualSourceValidationViaAPI(t *testing.T) {
 		t.Fatalf("unknown source status=%d", resp.StatusCode)
 	}
 
-	validate, _ = http.NewRequest(http.MethodPost, httpSrv.URL+"/v1/sources/manual/validate", nil)
+	validate, _ = http.NewRequest(http.MethodPost, httpSrv.URL+"/api/v1/admin/sources/manual/validate", nil)
 	validate.Header.Set("Authorization", "Bearer "+e.cfg.APIToken)
 	resp, err = http.DefaultClient.Do(validate)
 	if err != nil {
@@ -958,7 +989,7 @@ func TestManualSourceValidationViaAPI(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("validation did not finish in time")
 		}
-		req, _ := http.NewRequest(http.MethodGet, httpSrv.URL+"/v1/admin/validation", nil)
+		req, _ := http.NewRequest(http.MethodGet, httpSrv.URL+"/api/v1/admin/validation", nil)
 		req.Header.Set("Authorization", "Bearer "+e.cfg.APIToken)
 		st, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -1016,8 +1047,7 @@ func TestBuiltInJudgeSignedHTTP(t *testing.T) {
 		t.Fatalf("observed exit ip %q, want 127.0.0.1", got)
 	}
 
-	// A probe configured with the wrong judge secret must fail as suspected
-	// interception instead of trusting an unverifiable response.
+	// A different judge signing configuration must invalidate reusable evidence.
 	if _, derr := e.leases.Release(context.Background(), result.Items[0].LeaseID, "master", true); derr != nil {
 		t.Fatalf("release for wrong-secret case: %v", derr)
 	}
@@ -1033,9 +1063,8 @@ func TestBuiltInJudgeSignedHTTP(t *testing.T) {
 		fmt.Sprintf("http://127.0.0.1:%d", portOf(proxy.URL))+"\n"); derr != nil {
 		t.Fatalf("import manual2: %v", derr)
 	}
-	if _, derr := bad.Acquire(context.Background(), application.AcquireRequest{Count: 1}); derr == nil ||
-		derr.Code != "INSUFFICIENT_VALIDATED_RESOURCES" {
-		t.Fatalf("wrong-secret acquire error = %v, want INSUFFICIENT_VALIDATED_RESOURCES", derr)
+	if result, derr := bad.Acquire(context.Background(), application.AcquireRequest{Count: 1}); derr != nil || result.Delivered != 0 {
+		t.Fatalf("wrong-secret evidence must not be accepted or reused: %v %+v", derr, result)
 	}
 }
 
@@ -1049,9 +1078,9 @@ func TestAuthRequiredProxyClassifiedAsAuth(t *testing.T) {
 	e := newEnv(t, j, nil)
 	e.importProxy(t, "manual", fmt.Sprintf("http://user:pass@127.0.0.1:%d", portOf(authProxy.URL)))
 
-	_, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
-	if derr == nil || derr.Code != "INSUFFICIENT_VALIDATED_RESOURCES" {
-		t.Fatalf("acquire error = %v, want INSUFFICIENT_VALIDATED_RESOURCES", derr)
+	result, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
+	if derr != nil || result.Delivered != 0 {
+		t.Fatalf("auth-failed proxy must not be delivered: %v %+v", derr, result)
 	}
 	stats, err := e.store.Stats(context.Background())
 	if err != nil {

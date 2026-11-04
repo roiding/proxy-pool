@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type Transport string
 
@@ -31,6 +34,26 @@ type Connection struct {
 	Port      int       `json:"port"`
 	Username  string    `json:"username,omitempty"`
 	Password  string    `json:"password,omitempty"`
+}
+
+// MarshalJSON keeps the wire connection faithful to the actual credential
+// configuration: an authenticated connection always shows its password,
+// including an explicit empty string, while anonymous connections never
+// invent credentials. Parsing stays the default unmarshal behavior.
+func (c Connection) MarshalJSON() ([]byte, error) {
+	type connectionFields struct {
+		Transport Transport `json:"transport"`
+		Host      string    `json:"host"`
+		Port      int       `json:"port"`
+		Username  string    `json:"username,omitempty"`
+		Password  *string   `json:"password,omitempty"`
+	}
+	out := connectionFields{Transport: c.Transport, Host: c.Host, Port: c.Port,
+		Username: c.Username}
+	if c.Username != "" || c.Password != "" {
+		out.Password = &c.Password
+	}
+	return json.Marshal(out)
 }
 
 type Source struct {
@@ -69,8 +92,15 @@ type Offer struct {
 }
 
 type Candidate struct {
-	Offer               Offer
-	Resource            Resource
+	Offer    Offer
+	Resource Resource
+	// Ephemeral marks request-local candidates (on-demand API channels).
+	// They are never backed by inventory rows: reservations and leases key on
+	// the deterministic connection fingerprint instead.
+	Ephemeral           bool
+	Fingerprint         string `json:"fingerprint"`
+	SourceConfigVersion int64  `json:"source_config_version"`
+	Incarnation         string `json:"incarnation"`
 	LastOutcome         string
 	LastPassAt          *time.Time
 	ConsecutiveFailures int
@@ -93,6 +123,7 @@ type Observation struct {
 // returned once at creation; storage keeps an HMAC hash and a display prefix.
 type APIKey struct {
 	ID                string    `json:"key_id"`
+	ProjectID         string    `json:"project_id"`
 	Name              string    `json:"name"`
 	TokenPrefix       string    `json:"token_prefix"`
 	Enabled           bool      `json:"enabled"`
@@ -118,14 +149,22 @@ const (
 )
 
 type Evidence struct {
-	AttemptID      string    `json:"attempt_id"`
-	RequestID      string    `json:"request_id"`
-	Profile        string    `json:"profile"`
-	Outcome        string    `json:"outcome"`
-	StartedAt      time.Time `json:"started_at"`
-	CompletedAt    time.Time `json:"completed_at"`
-	LatencyMS      int64     `json:"latency_ms"`
-	ObservedExitIP string    `json:"observed_exit_ip,omitempty"`
+	AttemptID    string    `json:"attempt_id"`
+	RequestID    string    `json:"request_id"`
+	Profile      string    `json:"profile"`
+	Mode         string    `json:"mode"`
+	Target       string    `json:"target"`
+	CacheHit     bool      `json:"cache_hit"`
+	SecurityHash string    `json:"security_hash"`
+	Outcome      string    `json:"outcome"`
+	StartedAt    time.Time `json:"started_at"`
+	CompletedAt  time.Time `json:"completed_at"`
+	// ValidUntil is the proof-reuse deadline supplied at delivery time
+	// (completed_at plus the configured maximum proof age); evidence at
+	// rest may leave it unset.
+	ValidUntil     *time.Time `json:"valid_until,omitempty"`
+	LatencyMS      int64      `json:"latency_ms"`
+	ObservedExitIP string     `json:"observed_exit_ip,omitempty"`
 }
 
 type Lease struct {
@@ -160,4 +199,20 @@ type NormalizedCandidate struct {
 	Claims                 map[string]string
 	MaxPoolLeases          int
 	CapacityGroup          string
+}
+
+// UploadKey authorizes an external program to push imports into specific
+// upload sources and to query those batches' results. Its plaintext token
+// is returned once at creation; storage keeps only an HMAC hash and a
+// display prefix. It never grants acquisition, admin, job, source
+// management or credential-reading rights, and is separate from project
+// acquisition keys.
+type UploadKey struct {
+	ID          string    `json:"key_id"`
+	Name        string    `json:"name"`
+	TokenPrefix string    `json:"token_prefix"`
+	Enabled     bool      `json:"enabled"`
+	SourceIDs   []string  `json:"source_ids"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }

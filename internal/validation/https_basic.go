@@ -103,11 +103,15 @@ func ProbeHTTPSBasic(ctx context.Context, conn domain.Connection, judgeURL strin
 		StartedAt: started,
 	}
 	fail := func(kind, format string, args ...any) (domain.Evidence, *Failure) {
+		ev.CompletedAt = time.Now()
+		ev.LatencyMS = ev.CompletedAt.Sub(started).Milliseconds()
 		return ev, &Failure{Kind: kind, Detail: fmt.Sprintf(format, args...)}
 	}
 	nonce := newNonce()
 	transport, tfail := probeTransport(conn, limits)
 	if tfail != nil {
+		ev.CompletedAt = time.Now()
+		ev.LatencyMS = ev.CompletedAt.Sub(started).Milliseconds()
 		return ev, tfail
 	}
 	defer transport.CloseIdleConnections()
@@ -125,8 +129,6 @@ func ProbeHTTPSBasic(ctx context.Context, conn domain.Connection, judgeURL strin
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "proxy-pool-probe/1")
 	resp, err := client.Do(req)
-	ev.CompletedAt = time.Now()
-	ev.LatencyMS = ev.CompletedAt.Sub(started).Milliseconds()
 	if err != nil {
 		if ctx.Err() != nil {
 			return fail(FailBudget, "request deadline reached during probe: %v", ctx.Err())
@@ -181,6 +183,8 @@ func ProbeHTTPSBasic(ctx context.Context, conn domain.Connection, judgeURL strin
 	if err != nil || !ip.IsValid() {
 		return fail(FailJudge, "judge returned invalid exit_ip %q", jr.ExitIP)
 	}
+	ev.CompletedAt = time.Now()
+	ev.LatencyMS = ev.CompletedAt.Sub(started).Milliseconds()
 	ev.Outcome = "PASS"
 	ev.ObservedExitIP = ip.String()
 	return ev, nil

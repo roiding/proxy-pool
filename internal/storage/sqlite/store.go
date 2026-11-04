@@ -66,6 +66,10 @@ func New(db *sql.DB) *Store { return &Store{db: db} }
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// DB exposes the raw handle for diagnostics and test fixtures; production
+// code must go through typed methods.
+func (s *Store) DB() *sql.DB { return s.db }
+
 // fmtTime uses a fixed-width fraction so lexicographic TEXT comparison in
 // SQLite matches chronological order; RFC3339Nano trims trailing zeros and
 // breaks ordering across the same second.
@@ -318,14 +322,84 @@ CREATE INDEX IF NOT EXISTS idx_leases_consumer
   ON leases(consumer_id, resource_id, state, deadline);
 `
 
+// schemaV6 detaches leases/reservations from the static inventory so
+// on-demand API deliveries can key on the connection fingerprint without
+// inventory rows, and revokes legacy provider-API offers (they are fetched
+// per request now, never imported).
+const schemaV6 = `
+UPDATE source_offers SET state = 'REVOKED'
+WHERE source_id IN (SELECT source_id FROM sources WHERE adapter_type = 'provider_api');
+CREATE TABLE leases_v6 (
+  lease_id TEXT PRIMARY KEY,
+  tenant TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  resource_id TEXT NOT NULL,
+  offer_id TEXT NOT NULL,
+  context_key TEXT NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'exclusive',
+  fence INTEGER NOT NULL,
+  deadline TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'ACTIVE',
+  connection_json TEXT NOT NULL,
+  validation_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  released_at TEXT,
+  consumer_id TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO leases_v6 SELECT lease_id, tenant, request_id, resource_id, offer_id, context_key,
+  mode, fence, deadline, state, connection_json, validation_json, created_at, released_at, consumer_id
+FROM leases;
+DROP TABLE leases;
+ALTER TABLE leases_v6 RENAME TO leases;
+CREATE INDEX idx_leases_resource ON leases(resource_id, state, deadline);
+CREATE INDEX idx_leases_consumer ON leases(consumer_id, resource_id, state, deadline);
+CREATE TABLE reservations_v6 (
+  reservation_id TEXT PRIMARY KEY,
+  resource_id TEXT NOT NULL,
+  offer_id TEXT NOT NULL,
+  context_key TEXT NOT NULL,
+  owner TEXT NOT NULL,
+  fence INTEGER NOT NULL,
+  deadline TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'RESERVED',
+  created_at TEXT NOT NULL,
+  consumer_id TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO reservations_v6 SELECT reservation_id, resource_id, offer_id, context_key,
+  owner, fence, deadline, state, created_at, consumer_id
+FROM reservations;
+DROP TABLE reservations;
+ALTER TABLE reservations_v6 RENAME TO reservations;
+CREATE INDEX idx_res_resource ON reservations(resource_id, state, deadline);
+CREATE INDEX idx_res_consumer ON reservations(consumer_id, resource_id, state, deadline);
+`
+
 func (s *Store) Migrate(ctx context.Context) error {
+	warnings, err := s.MigrateWithOptions(ctx, MigrateOptions{})
+	_ = warnings
+	return err
+}
+
+// MigrateOptions carries deployment inputs the database cannot derive on its
+// own. LegacyMaxCooldown is the configured maximum downstream cooldown:
+// frozen v6 rows only recorded last_delivered_at, so legacy cooldowns are
+// conservatively rebased to last_delivery + LegacyMaxCooldown and are never
+// dropped or zeroed.
+type MigrateOptions struct {
+	IdentitySecret    string
+	LegacyMaxCooldown time.Duration
+}
+
+// MigrateWithOptions advances the schema to the current version and returns
+// non-fatal migration warnings alongside the error.
+func (s *Store) MigrateWithOptions(ctx context.Context, opts MigrateOptions) ([]string, error) {
 	var version int
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
-		return mapErr(err)
+		return nil, mapErr(err)
 	}
 	switch {
-	case version > 5:
-		return fmt.Errorf("schema version %d is newer than supported version 5", version)
+	case version > 7:
+		return nil, fmt.Errorf("schema version %d is newer than supported version 7", version)
 	case version == 0:
 		err := s.tx(ctx, func(t *sql.Tx) error {
 			if _, err := t.ExecContext(ctx, schemaV1); err != nil {
@@ -335,7 +409,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return err
 		})
 		if err != nil {
-			return err
+			return nil, err
 		}
 		version = 1
 	}
@@ -347,7 +421,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 			_, err := t.ExecContext(ctx, "PRAGMA user_version = 2")
 			return err
 		}); err != nil {
-			return err
+			return nil, err
 		}
 		version = 2
 	}
@@ -359,7 +433,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 			_, err := t.ExecContext(ctx, "PRAGMA user_version = 3")
 			return err
 		}); err != nil {
-			return err
+			return nil, err
 		}
 		version = 3
 	}
@@ -371,20 +445,490 @@ func (s *Store) Migrate(ctx context.Context) error {
 			_, err := t.ExecContext(ctx, "PRAGMA user_version = 4")
 			return err
 		}); err != nil {
-			return err
+			return nil, err
 		}
 		version = 4
 	}
 	if version == 4 {
-		return s.tx(ctx, func(t *sql.Tx) error {
+		if err := s.tx(ctx, func(t *sql.Tx) error {
 			if _, err := t.ExecContext(ctx, schemaV5); err != nil {
 				return err
 			}
 			_, err := t.ExecContext(ctx, "PRAGMA user_version = 5")
 			return err
+		}); err != nil {
+			return nil, err
+		}
+		version = 5
+	}
+	if version == 5 {
+		err := s.tx(ctx, func(t *sql.Tx) error {
+			if _, err := t.ExecContext(ctx, schemaV6); err != nil {
+				return err
+			}
+			_, err := t.ExecContext(ctx, "PRAGMA user_version = 6")
+			return err
 		})
+		if err != nil {
+			return nil, err
+		}
+		version = 6
+	}
+	if version == 6 {
+		if warnings, err := s.migrateV7(ctx, opts); err != nil {
+			return nil, err
+		} else if len(warnings) > 0 {
+			// Ensure always runs below, including on a freshly migrated DB.
+			if err := s.tx(ctx, func(t *sql.Tx) error {
+				return ensureSupplySchemaTx(ctx, t)
+			}); err != nil {
+				return nil, err
+			}
+			return warnings, nil
+		}
+	}
+	if err := s.tx(ctx, func(t *sql.Tx) error {
+		return ensureSupplySchemaTx(ctx, t)
+	}); err != nil {
+		return nil, err
+	}
+	if version >= 7 {
+		// Fresh v6->v7 already ran this above; an idempotent second pass keeps
+		// the branch uniform and harmless.
+		if err := s.ensureV7AdditiveColumns(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return nil, nil
+}
+
+const schemaV7 = `
+CREATE TABLE IF NOT EXISTS projects (
+  project_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  cooldown_ms INTEGER NOT NULL DEFAULT 0,
+  timeout_ms INTEGER NOT NULL DEFAULT 0,
+  validation_json TEXT NOT NULL DEFAULT '{}',
+  allowed_source_ids TEXT,
+  config_version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS project_proxy_cd (
+  project_id TEXT NOT NULL,
+  connection_fingerprint TEXT NOT NULL,
+  issued_at TEXT NOT NULL,
+  blocked_until TEXT NOT NULL,
+  PRIMARY KEY (project_id, connection_fingerprint)
+);
+CREATE INDEX IF NOT EXISTS idx_project_cd_blocked ON project_proxy_cd(blocked_until);
+CREATE TABLE IF NOT EXISTS sticky_bindings (
+  project_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  owner TEXT NOT NULL DEFAULT '',
+  fingerprint TEXT NOT NULL,
+  source_id TEXT NOT NULL DEFAULT '',
+  source_config_version INTEGER NOT NULL DEFAULT 0,
+  resource_id TEXT NOT NULL DEFAULT '',
+  incarnation TEXT NOT NULL DEFAULT '',
+  connection_ciphertext TEXT NOT NULL DEFAULT '',
+  validation_json TEXT NOT NULL DEFAULT '{}',
+  deadline TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'ACTIVE',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sticky_state_deadline ON sticky_bindings(state, deadline);
+CREATE TABLE IF NOT EXISTS jobs (
+  job_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'PENDING',
+  params_json TEXT NOT NULL DEFAULT '{}',
+  target INTEGER NOT NULL DEFAULT 0,
+  ready INTEGER NOT NULL DEFAULT 0,
+  probed INTEGER NOT NULL DEFAULT 0,
+  failed INTEGER NOT NULL DEFAULT 0,
+  stop_reason TEXT NOT NULL DEFAULT '',
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_project ON jobs(project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state);
+CREATE TABLE IF NOT EXISTS validation_evidence (
+  connection_fingerprint TEXT NOT NULL,
+  scope_hash TEXT NOT NULL,
+  source_id TEXT NOT NULL DEFAULT '',
+  source_config_version INTEGER NOT NULL DEFAULT 0,
+  incarnation TEXT NOT NULL DEFAULT '',
+  evidence_json TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  PRIMARY KEY (connection_fingerprint, scope_hash)
+);
+`
+
+const schemaV7APIKeyProject = `
+ALTER TABLE api_keys ADD COLUMN project_id TEXT NOT NULL DEFAULT '';
+`
+
+const schemaV7ReservationSourceVersion = `
+ALTER TABLE reservations ADD COLUMN source_config_version INTEGER NOT NULL DEFAULT 0;
+`
+
+const schemaV7LeaseKeyID = `
+ALTER TABLE leases ADD COLUMN key_id TEXT NOT NULL DEFAULT '';
+`
+
+const schemaV7ReservationKeyID = `
+ALTER TABLE reservations ADD COLUMN key_id TEXT NOT NULL DEFAULT '';
+`
+
+const schemaV7StickyOwner = `
+ALTER TABLE sticky_bindings ADD COLUMN owner TEXT NOT NULL DEFAULT '';
+`
+
+const schemaV7StickyObject = `
+ALTER TABLE sticky_bindings ADD COLUMN resource_id TEXT NOT NULL DEFAULT '';
+`
+
+const schemaV7StickyIncarnation = `
+ALTER TABLE sticky_bindings ADD COLUMN incarnation TEXT NOT NULL DEFAULT '';
+`
+
+// schemaV7ResourceIncarnation gives every fresh resource row a nonce so
+// health/attempt writes from probes that started before a delete can never
+// reattach (and resurrect state) after the same connection is re-imported.
+const schemaV7ResourceIncarnation = `
+ALTER TABLE proxy_resources ADD COLUMN incarnation TEXT NOT NULL DEFAULT '';
+`
+
+// ensureV7AdditiveColumns repairs databases stamped at v7 before later
+// additive columns/tables landed. It is idempotent and never advances the
+// durable schema version, so a restart can safely run it on every boot.
+func (s *Store) ensureV7AdditiveColumns(ctx context.Context) error {
+	return s.tx(ctx, func(t *sql.Tx) error {
+		columns := []struct{ table, column, ddl string }{
+			{"api_keys", "project_id", schemaV7APIKeyProject},
+			{"reservations", "source_config_version", schemaV7ReservationSourceVersion},
+			{"leases", "key_id", schemaV7LeaseKeyID},
+			{"reservations", "key_id", schemaV7ReservationKeyID},
+			{"sticky_bindings", "owner", schemaV7StickyOwner},
+			{"sticky_bindings", "resource_id", schemaV7StickyObject},
+			{"sticky_bindings", "incarnation", schemaV7StickyIncarnation},
+			{"proxy_resources", "incarnation", schemaV7ResourceIncarnation},
+		}
+		for _, col := range columns {
+			var count int
+			if err := t.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`,
+				col.table, col.column).Scan(&count); err != nil {
+				return err
+			}
+			if count == 0 {
+				if _, err := t.ExecContext(ctx, col.ddl); err != nil {
+					return err
+				}
+			}
+		}
+		return ensureSupplySchemaTx(ctx, t)
+	})
+}
+
+// defaultLegacyMaxCooldown is the conservative fallback when the caller does
+// not provide one; it matches the shipped max_downstream_cooldown_ms.
+const defaultLegacyMaxCooldown = 7 * 24 * time.Hour
+
+// projectWideCooldownFingerprint is the wildcard row that holds a whole
+// project in cooldown; legacy rows that cannot be mapped onto a connection
+// fingerprint are converted into it so the new selector can never silently
+// ignore a window the old consumer table recorded.
+const projectWideCooldownFingerprint = ""
+
+func (s *Store) migrateV7(ctx context.Context, opts MigrateOptions) ([]string, error) {
+	now := time.Now().UTC()
+	var warnings []string
+	err := s.tx(ctx, func(t *sql.Tx) error {
+		if _, err := t.ExecContext(ctx, schemaV7); err != nil {
+			return err
+		}
+		var hasProjectID int
+		if err := t.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM pragma_table_info('api_keys') WHERE name = 'project_id'`).
+			Scan(&hasProjectID); err != nil {
+			return err
+		}
+		if hasProjectID == 0 {
+			if _, err := t.ExecContext(ctx, schemaV7APIKeyProject); err != nil {
+				return err
+			}
+		}
+		var hasResVersion int
+		if err := t.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM pragma_table_info('reservations')
+			WHERE name = 'source_config_version'`).Scan(&hasResVersion); err != nil {
+			return err
+		}
+		if hasResVersion == 0 {
+			if _, err := t.ExecContext(ctx, schemaV7ReservationSourceVersion); err != nil {
+				return err
+			}
+		}
+		for _, col := range []struct{ table, column, ddl string }{
+			{"leases", "key_id", schemaV7LeaseKeyID},
+			{"reservations", "key_id", schemaV7ReservationKeyID},
+			{"sticky_bindings", "owner", schemaV7StickyOwner},
+			{"sticky_bindings", "resource_id", schemaV7StickyObject},
+			{"sticky_bindings", "incarnation", schemaV7StickyIncarnation},
+		} {
+			var hasCol int
+			if err := t.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, col.table, col.column).
+				Scan(&hasCol); err != nil {
+				return err
+			}
+			if hasCol == 0 {
+				if _, err := t.ExecContext(ctx, col.ddl); err != nil {
+					return err
+				}
+			}
+		}
+		var hasIncarnation int
+		if err := t.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM pragma_table_info('proxy_resources')
+			WHERE name = 'incarnation'`).Scan(&hasIncarnation); err != nil {
+			return err
+		}
+		if hasIncarnation == 0 {
+			if _, err := t.ExecContext(ctx, schemaV7ResourceIncarnation); err != nil {
+				return err
+			}
+		}
+		stamp := fmtTime(now)
+		if _, err := t.ExecContext(ctx, `
+			INSERT INTO projects(project_id, name, enabled, cooldown_ms, timeout_ms,
+			  validation_json, allowed_source_ids, config_version, created_at, updated_at)
+			VALUES(?, 'Default', 1, 0, 0, '{}', NULL, 1, ?, ?)
+			ON CONFLICT(project_id) DO NOTHING`, DefaultProjectID, stamp, stamp); err != nil {
+			return err
+		}
+		// Every legacy key becomes its own project: distinct businesses must
+		// never share project CD because keys were rotated or re-created.
+		rows, err := t.QueryContext(ctx,
+			`SELECT key_id, name, default_cooldown_ms FROM api_keys WHERE project_id = ''`)
+		if err != nil {
+			return err
+		}
+		type legacyKey struct {
+			id string
+			cd int64
+		}
+		var legacyKeys []legacyKey
+		for rows.Next() {
+			var k legacyKey
+			if err := rows.Scan(&k.id, new(string), &k.cd); err != nil {
+				rows.Close()
+				return err
+			}
+			legacyKeys = append(legacyKeys, k)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		for _, k := range legacyKeys {
+			projectID := legacyProjectID(k.id)
+			if _, err := t.ExecContext(ctx, `
+				INSERT INTO projects(project_id, name, enabled, cooldown_ms, timeout_ms,
+				  validation_json, allowed_source_ids, config_version, created_at, updated_at)
+				VALUES(?, ?, 1, ?, 0, '{}', NULL, 1, ?, ?)
+				ON CONFLICT(project_id) DO NOTHING`, projectID, k.id, k.cd, stamp, stamp); err != nil {
+				return err
+			}
+			if _, err := t.ExecContext(ctx,
+				`UPDATE api_keys SET project_id = ?, updated_at = ? WHERE key_id = ?`,
+				projectID, stamp, k.id); err != nil {
+				return err
+			}
+		}
+		if len(legacyKeys) > 0 {
+			warnings = append(warnings, fmt.Sprintf(
+				"migrated %d legacy api key(s) into one project each; original per-key cooldown values were unknown", len(legacyKeys)))
+		}
+		if err := s.migrateLegacyCooldowns(ctx, t, opts, now, &warnings); err != nil {
+			return err
+		}
+		// Supply attribution is an additive idempotent table set. It lives in
+		// the same successful migration transaction so fresh and upgraded
+		// databases both expose real stats without a fixture-only step.
+		if err := ensureSupplySchemaTx(ctx, t); err != nil {
+			return err
+		}
+		_, err = t.ExecContext(ctx, "PRAGMA user_version = 7")
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return warnings, nil
+}
+
+// migrateLegacyCooldowns rebases frozen last_delivered_at rows into fixed
+// project_proxy_cd windows. Rows without a matching inventory resource cannot
+// be fingerprinted and are kept (and warned about) rather than dropped.
+func (s *Store) migrateLegacyCooldowns(ctx context.Context, t *sql.Tx,
+	opts MigrateOptions, now time.Time, warnings *[]string) error {
+	var legacyRows int
+	if err := t.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM consumer_proxy_cooldowns`).Scan(&legacyRows); err != nil {
+		return err
+	}
+	if legacyRows == 0 {
+		return nil
+	}
+	maxCooldown := opts.LegacyMaxCooldown
+	if maxCooldown <= 0 {
+		maxCooldown = defaultLegacyMaxCooldown
+		*warnings = append(*warnings,
+			"legacy cooldown migration used the built-in 7d default because no LegacyMaxCooldown was provided")
+	}
+	if opts.IdentitySecret == "" {
+		// Fail-safe: stamping v7 without a secret would permanently hide
+		// every legacy cooldown from the new selector. The deployment must
+		// provide IdentitySecret (main always does).
+		return fmt.Errorf("cannot migrate %d legacy cooldown row(s) without an identity secret: provide MigrateOptions.IdentitySecret", legacyRows)
+	}
+	rows, err := t.QueryContext(ctx, `
+		SELECT c.consumer_id, c.resource_id, c.last_delivered_at,
+		       COALESCE(r.transport, ''), COALESCE(r.host, ''), COALESCE(r.port, -1),
+		       COALESCE(cr.username, ''), COALESCE(cr.password, '')
+		FROM consumer_proxy_cooldowns c
+		LEFT JOIN proxy_resources r ON r.resource_id = c.resource_id
+		LEFT JOIN proxy_credentials cr ON cr.credential_version = r.credential_version`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type cdRow struct {
+		consumerID string
+		resourceID string
+		delivered  time.Time
+		transport  domain.Transport
+		host       string
+		port       int
+		username   string
+		password   string
+	}
+	var cds []cdRow
+	for rows.Next() {
+		var r cdRow
+		var delivered string
+		if err := rows.Scan(&r.consumerID, &r.resourceID, &delivered, &r.transport,
+			&r.host, &r.port, &r.username, &r.password); err != nil {
+			return err
+		}
+		if r.delivered, err = time.Parse(time.RFC3339Nano, delivered); err != nil {
+			// A corrupted timestamp must not fail the whole migration; the
+			// row still forces a conservative project hold below.
+			r.delivered = time.Time{}
+		}
+		cds = append(cds, r)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	keyProjects := map[string]string{}
+	keyRows, err := t.QueryContext(ctx,
+		`SELECT key_id, project_id FROM api_keys WHERE project_id != ''`)
+	if err != nil {
+		return err
+	}
+	for keyRows.Next() {
+		var keyID, projectID string
+		if err := keyRows.Scan(&keyID, &projectID); err != nil {
+			keyRows.Close()
+			return err
+		}
+		keyProjects[keyID] = projectID
+	}
+	if err := keyRows.Err(); err != nil {
+		keyRows.Close()
+		return err
+	}
+	keyRows.Close()
+	unmapped := 0
+	for _, r := range cds {
+		projectID := keyProjects[r.consumerID]
+		if projectID == "" {
+			projectID = DefaultProjectID
+		}
+		if r.transport == "" || r.delivered.IsZero() {
+			// No inventory row (or an unreadable delivery time): the
+			// fingerprint cannot be recomputed, so hold the whole project
+			// conservatively instead of silently dropping the window.
+			unmapped++
+			if _, err := holdProjectCooldownTx(ctx, t, projectID,
+				r.delivered, maxCooldown, now); err != nil {
+				return err
+			}
+			continue
+		}
+		fp := domain.ConnectionFingerprint(opts.IdentitySecret, r.transport,
+			r.host, r.port, r.username, r.password)
+		blockedUntil := r.delivered.Add(maxCooldown)
+		if !blockedUntil.After(now) {
+			continue
+		}
+		if _, err := t.ExecContext(ctx, `
+			INSERT INTO project_proxy_cd(project_id, connection_fingerprint, issued_at, blocked_until)
+			VALUES(?,?,?,?)
+			ON CONFLICT(project_id, connection_fingerprint) DO UPDATE SET
+			  blocked_until = MAX(blocked_until, excluded.blocked_until),
+			  issued_at = CASE
+			    WHEN excluded.blocked_until > blocked_until THEN excluded.issued_at
+			    ELSE issued_at END`,
+			projectID, fp, fmtTime(r.delivered), fmtTime(blockedUntil)); err != nil {
+			return err
+		}
+	}
+	if unmapped > 0 {
+		*warnings = append(*warnings, fmt.Sprintf(
+			"%d legacy cooldown row(s) had no matching inventory resource or unreadable delivery time; a conservative project-wide cooldown hold was opened for each", unmapped))
 	}
 	return nil
+}
+
+// holdProjectCooldownTx opens a project-wide cooldown window from the given
+// delivery baseline; the wildcard row blocks every fingerprint for the
+// project until it expires.
+func holdProjectCooldownTx(ctx context.Context, t *sql.Tx, projectID string,
+	delivered time.Time, cooldown time.Duration, now time.Time) (bool, error) {
+	baseline := delivered
+	if baseline.IsZero() || baseline.After(now) {
+		baseline = now
+	}
+	blockedUntil := baseline.Add(cooldown)
+	if !blockedUntil.After(now) {
+		return false, nil
+	}
+	_, err := t.ExecContext(ctx, `
+		INSERT INTO project_proxy_cd(project_id, connection_fingerprint, issued_at, blocked_until)
+		VALUES(?,?,?,?)
+		ON CONFLICT(project_id, connection_fingerprint) DO UPDATE SET
+		  blocked_until = MAX(blocked_until, excluded.blocked_until),
+		  issued_at = CASE
+		    WHEN excluded.blocked_until > blocked_until THEN excluded.issued_at
+		    ELSE issued_at END`,
+		projectID, projectWideCooldownFingerprint, fmtTime(baseline), fmtTime(blockedUntil))
+	return err == nil, err
 }
 
 func (s *Store) UpsertSource(ctx context.Context, src domain.Source, now time.Time) error {

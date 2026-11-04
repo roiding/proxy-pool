@@ -1,0 +1,15 @@
+# Redacted stdout captured from the authorized live tool result.
+# No raw URI, host, IP, credential, or parse error is present.
+input_bytes=78278 sha256=1c315c5240fc0c248bdd3de61a686b87d9bb95d1f75a09627aea3ccb484b9237 records=1400 attempted=12 PASS=0 FAIL=12
+sample=00 index=0 transport=http result=FAIL class=AUTH latency_ms=577
+sample=01 index=1 transport=http result=FAIL class=AUTH latency_ms=524
+sample=02 index=2 transport=http result=FAIL class=AUTH latency_ms=441
+sample=03 index=3 transport=http result=FAIL class=AUTH latency_ms=440
+sample=04 index=4 transport=http result=FAIL class=AUTH latency_ms=334
+sample=05 index=5 transport=http result=FAIL class=AUTH latency_ms=440
+sample=06 index=6 transport=http result=FAIL class=AUTH latency_ms=542
+sample=07 index=7 transport=http result=FAIL class=AUTH latency_ms=333
+sample=08 index=8 transport=http result=FAIL class=AUTH latency_ms=368
+sample=09 index=9 transport=http result=FAIL class=AUTH latency_ms=533
+sample=10 index=10 transport=http result=FAIL class=AUTH latency_ms=488
+sample=11 index=11 transport=http result=FAIL class=AUTH latency_ms=563

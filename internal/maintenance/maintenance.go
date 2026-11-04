@@ -8,10 +8,11 @@ import (
 	"proxypool/internal/storage/sqlite"
 )
 
-// RunOnce expires leases/reservations, prunes history, and retires provider
-// resources whose request-time validation evidence reached the failure
-// threshold. It never performs proxy liveness probes: that is a design
-// invariant, not an optimization.
+// RunOnce expires leases/reservations, prunes history, and clears fully
+// elapsed project-CD windows. It never performs proxy liveness probes and it
+// never deletes inventory by failure counts: uncertain outcomes keep their
+// candidates and backoff. The providerRetireThreshold parameter is retained
+// for call-site stability but no longer drives any eviction.
 func RunOnce(ctx context.Context, store *sqlite.Store, retention time.Duration,
 	providerRetireThreshold int, log *slog.Logger) {
 	stats, err := store.SweepExpired(ctx, time.Now(), retention)
@@ -26,28 +27,16 @@ func RunOnce(ctx context.Context, store *sqlite.Store, retention time.Duration,
 			"pruned_attempts", stats.PrunedAttempts, "pruned_feedback", stats.PrunedFeedback,
 			"pruned_cooldowns", stats.PrunedCooldowns)
 	}
-	if providerRetireThreshold > 0 {
-		retireFailedProviders(ctx, store, providerRetireThreshold, log)
+	_ = providerRetireThreshold
+	if n, err := store.ClearExpiredProjectCooldowns(ctx, time.Now()); err != nil {
+		log.Error("expired project cooldown sweep failed", "error", err)
+	} else if n > 0 {
+		log.Info("expired project cooldown sweep", "cleared", n)
 	}
-}
-
-// retireFailedProviders mirrors the custom-source consecutive-failure
-// eviction for provider channels: acquire attempts are real validation
-// evidence, so resources that keep failing are tombstoned and removed.
-func retireFailedProviders(ctx context.Context, store *sqlite.Store, threshold int, log *slog.Logger) {
-	resourceIDs, err := store.RetireCandidates(ctx, threshold, "provider_api", "")
-	if err != nil {
-		log.Error("provider retirement lookup failed", "error", err)
-		return
-	}
-	retired := 0
-	for _, resourceID := range resourceIDs {
-		if count, err := store.RetireResource(ctx, resourceID, "EVICTED", time.Now()); err == nil {
-			retired += count
-		}
-	}
-	if retired > 0 {
-		log.Info("provider resource retirement", "retired", retired)
+	if n, err := store.SweepOrphanResources(ctx); err != nil {
+		log.Error("orphan resource sweep failed", "error", err)
+	} else if n > 0 {
+		log.Info("orphan resource sweep", "removed", n)
 	}
 }
 

@@ -1,0 +1,30 @@
+{
+  "scope": "root independent local signed-HTTP judge; no external requests",
+  "run_directory": "/private/tmp/proxy-pool-root-acceptance-20261103/main-slow-1jc21d70",
+  "version": "audit-refactor-final-20261103 (52b69c2-dirty)",
+  "in_flight_shutdown_ms": 8.16,
+  "canceled_response": {
+    "status": 200,
+    "delivered": 0,
+    "reason": "VALIDATION_BUDGET_EXHAUSTED"
+  },
+  "released_claim_state": "EXPIRED",
+  "idle_shutdown_ms": 7.696,
+  "final_shutdown_ms": 3.739,
+  "status": "PASS",
+  "restart_count": 2,
+  "proof_refreshed": true,
+  "binding_version": 3,
+  "cd_rows": 1,
+  "ordinary_zero_cd_reason": "NO_ELIGIBLE_CANDIDATES",
+  "integrity": "ok",
+  "request_counts": {
+    "proxy": 3,
+    "judge": 3,
+    "forbidden_target": 0
+  },
+  "main_system_smoke": "PASS",
+  "embedded_html_smoke": "PASS",
+  "masked_settings_smoke": "PASS",
+  "password_and_cookie_smoke": "PASS"
+}

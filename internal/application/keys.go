@@ -30,6 +30,19 @@ func NewKeyService(store *sqlite.Store, secret string) *KeyService {
 // Create generates a downstream token and stores only its HMAC hash. The
 // plaintext token is returned once and cannot be recovered later.
 func (s *KeyService) Create(ctx context.Context, name string, defaultCooldown time.Duration) (domain.APIKey, string, error) {
+	return s.CreateForProject(ctx, sqlite.DefaultProjectID, name, defaultCooldown)
+}
+
+// CreateForProject generates a token bound to an existing project. Project
+// CD, defaults, and source allowlist follow the project, not the key.
+func (s *KeyService) CreateForProject(ctx context.Context, projectID, name string,
+	defaultCooldown time.Duration) (domain.APIKey, string, error) {
+	if projectID == "" {
+		projectID = sqlite.DefaultProjectID
+	}
+	if _, err := s.store.GetProject(ctx, projectID); err != nil {
+		return domain.APIKey{}, "", err
+	}
 	name = strings.TrimSpace(name)
 	if !apiKeyNamePattern.MatchString(name) {
 		return domain.APIKey{}, "", domain.InvalidRequest(
@@ -43,6 +56,7 @@ func (s *KeyService) Create(ctx context.Context, name string, defaultCooldown ti
 	now := s.Now()
 	key := domain.APIKey{
 		ID:                domain.NewID("key_"),
+		ProjectID:         projectID,
 		Name:              name,
 		TokenPrefix:       token[:11],
 		Enabled:           true,

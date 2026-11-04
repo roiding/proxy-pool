@@ -124,14 +124,14 @@ func TestFetchSitePagesDedupeAndStop(t *testing.T) {
 		case "1":
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
 				"list": []map[string]any{
-					{"ip": "203.0.113.50", "port": 80, "protocol": 1},
+					{"ip": "8.8.8.8", "port": 80, "protocol": 1},
 					{"ip": "10.0.0.1", "port": 80, "protocol": 1},
 				}, "page_count": 2}})
 		case "2":
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
 				"list": []map[string]any{
-					{"ip": "203.0.113.50", "port": 80, "protocol": 1},
-					{"ip": "203.0.113.51", "port": 80, "protocol": 1},
+					{"ip": "8.8.8.8", "port": 80, "protocol": 1},
+					{"ip": "8.8.4.4", "port": 80, "protocol": 1},
 				}}})
 		default:
 			_, _ = w.Write([]byte("no data"))
@@ -206,5 +206,136 @@ func TestCatalogUniqueIDsAndPageBounds(t *testing.T) {
 	}
 	if len(Catalog) != len(verified) {
 		t.Fatalf("catalog has %d entries, want %d verified", len(Catalog), len(verified))
+	}
+}
+
+// fixtureFor builds a page body of the site's real response shape for one of
+// three scenarios: a normal page, an empty batch, and a page with malformed
+// rows. Every catalog entry must survive all three without crashing, and the
+// normal page must actually parse.
+func fixtureFor(kind ParserKind, scenario string) string {
+	ip, ip2 := "93.184.216.34", "93.184.216.35"
+	switch kind {
+	case ParserText:
+		switch scenario {
+		case "normal":
+			return ip + ":8080\n" + ip2 + ":3128\n"
+		case "empty":
+			return "\n"
+		default:
+			return "not a proxy at all\n" + ip + ":99999\n"
+		}
+	case ParserJSONList:
+		switch scenario {
+		case "normal":
+			return `{"data":{"list":[` +
+				`{"ip":"` + ip + `","port":8080,"protocol":1},` +
+				`{"ip":"` + ip2 + `","port":3128,"protocol":2}],"page_count":1}}`
+		case "empty":
+			return `{"data":{"list":[],"page_count":0}}`
+		default:
+			return `{"data":{"list":[{"ip":"300.1.1.1","port":80,"protocol":1},` +
+				`{"ip":"` + ip + `","port":1,"protocol":7}],"page_count":1}}`
+		}
+	case ParserTable2Cols:
+		switch scenario {
+		case "normal":
+			return "<table><tr><td>" + ip + "</td><td>8080</td></tr>" +
+				"<tr><td>" + ip2 + "</td><td>3128</td></tr></table>"
+		case "empty":
+			return "<table></table>"
+		default:
+			return "<table><tr><td>not-an-ip</td><td>8080</td></tr></table>"
+		}
+	case ParserTableTH:
+		switch scenario {
+		case "normal":
+			return "<table><tr><th>ip</th><th>port</th></tr>" +
+				"<tr><th>" + ip + "</th><th>8080</th></tr>" +
+				"<tr><th>" + ip2 + "</th><th>3128</th></tr></table>"
+		case "empty":
+			return "<table><tr><th>ip</th><th>port</th></tr></table>"
+		default:
+			return "<table><tr><th>localhost</th><th>8080</th></tr></table>"
+		}
+	case ParserRoleCells:
+		switch scenario {
+		case "normal":
+			return `<div role="row"><span role="cell">` + ip + `</span>` +
+				`<span role="cell">8080</span></div>` +
+				`<div role="row"><span role="cell">` + ip2 + `</span>` +
+				`<span role="cell">3128</span></div>`
+		case "empty":
+			return `<div role="row"></div>`
+		default:
+			return `<div role="row"><span role="cell">999.1.1.1</span>` +
+				`<span role="cell">8080</span></div>`
+		}
+	default:
+		// Every catalog entry must map to a fixture; a new parser kind without
+		// one fails the matrix instead of silently skipping verification.
+		return "\x00unfixtured kind\x00"
+	}
+}
+
+func TestCatalogSiteFixtureMatrix(t *testing.T) {
+	scenarios := []string{"normal", "empty", "malformed"}
+	for _, site := range Catalog {
+		site := site
+		for _, scenario := range scenarios {
+			t.Run(site.ID+"/"+scenario, func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					_, _ = w.Write([]byte(fixtureFor(site.Kind, scenario)))
+				}))
+				defer srv.Close()
+				probe := site
+				probe.URL = srv.URL
+				probe.Pages, probe.AutoPages, probe.DelayMS = 1, false, 1
+				out, err := FetchSite(context.Background(), srv.Client(), probe, 1, false)
+				if err != nil {
+					t.Fatalf("fetch %s %s: %v", site.ID, scenario, err)
+				}
+				if out.PagesDone != 1 {
+					t.Fatalf("pages done: %d", out.PagesDone)
+				}
+				switch scenario {
+				case "normal":
+					if len(out.Entries) < 1 {
+						t.Fatalf("normal fixture must parse: entries=%d rejected=%+v", len(out.Entries), out.Rejected)
+					}
+					for _, e := range out.Entries {
+						if e.Conn.Host == "" || e.Conn.Port < 1 || e.Conn.Port > 65535 {
+							t.Fatalf("malformed entry parsed: %+v", e)
+						}
+					}
+				case "empty":
+					if len(out.Entries) != 0 {
+						t.Fatalf("empty batch must yield nothing: %+v", out.Entries)
+					}
+				case "malformed":
+					if len(out.Entries) != 0 {
+						t.Fatalf("malformed fixture must not produce entries: %+v", out.Entries)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestFetchSiteCancelStopsPages pins that a cancelled context stops the page
+// walk instead of erroring as a channel outage: cancellation is a request
+// state, never evidence about the site.
+func TestFetchSiteCancelStopsPages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("203.0.113.9:8080\n"))
+	}))
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	site := Site{ID: "cancel", Name: "cancel", Kind: ParserText,
+		URL: srv.URL, Pages: 3, DelayMS: 1}
+	_, err := FetchSite(ctx, srv.Client(), site, 3, false)
+	if err == nil {
+		t.Fatal("cancelled fetch must report cancellation, not a fake success")
 	}
 }

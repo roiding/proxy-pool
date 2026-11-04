@@ -1,6 +1,7 @@
 package custom
 
 import (
+	"strings"
 	"testing"
 
 	"proxypool/internal/domain"
@@ -25,6 +26,26 @@ func TestParseLinesForms(t *testing.T) {
 	if cands[2].Conn.Transport != domain.TransportSOCKS5 ||
 		cands[2].Conn.Host != "2.3.4.5" || cands[2].Conn.Port != 1080 {
 		t.Fatalf("socks5 line parsed wrong: %+v", cands[2].Conn)
+	}
+}
+
+func TestParseLinesCredentialBoundsAndRedaction(t *testing.T) {
+	opts := LinesOptions{DefaultTransport: domain.TransportHTTP, AllowPrivate: false}
+	lines := []string{
+		"http://audit-user:audit-password-%ZZ@8.8.8.8:8080",
+		"http://audit-user:" + strings.Repeat("p", MaxCredentialBytes+1) + "@8.8.8.8:8080",
+	}
+	_, errs := ParseLines(opts, strings.Join(lines, "\n"))
+	if len(errs) != 2 {
+		t.Fatalf("expected two rejected lines, got %d: %v", len(errs), errs)
+	}
+	for _, item := range errs {
+		if strings.Contains(item.Error, "audit-user") ||
+			strings.Contains(item.Error, "audit-password") ||
+			strings.Contains(item.Input, "audit-user") ||
+			strings.Contains(item.Input, "audit-password") {
+			t.Fatalf("parser diagnostic exposed URI credentials: %+v", item)
+		}
 	}
 }
 

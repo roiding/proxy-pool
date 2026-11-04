@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,7 +17,9 @@ import (
 
 func TestSiteFetchChannelViaAPI(t *testing.T) {
 	j := startJudge(t)
+	var vendorHits atomic.Int64
 	vendor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		vendorHits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Query().Get("page") {
 		case "1":
@@ -65,54 +68,109 @@ func TestSiteFetchChannelViaAPI(t *testing.T) {
 	}
 
 	// The catalog endpoint lists every built-in site.
-	code, data := bearer(http.MethodGet, "/v1/admin/sites", "")
+	code, data := bearer(http.MethodGet, "/api/v1/admin/sites", "")
 	if code != http.StatusOK || !strings.Contains(string(data), "lumiproxy-elite") {
 		t.Fatalf("sites catalog: %d %s", code, data)
 	}
 
-	code, data = bearer(http.MethodPost, "/v1/sources",
-		`{"source_id":"lumiproxy-elite","adapter_type":"site_fetch","site_id":"lumiproxy-elite","max_pool_leases":1}`)
+	code, data = bearer(http.MethodPost, "/api/v1/admin/sources",
+		`{"source_id":"lumiproxy-elite","adapter_type":"site_fetch","config":{"site":{"site_id":"lumiproxy-elite"},"max_pool_leases":1}}`)
 	if code != http.StatusCreated {
 		t.Fatalf("create site source status=%d body=%s", code, data)
 	}
-	code, data = bearer(http.MethodPost, "/v1/sources", `{"source_id":"nope","adapter_type":"site_fetch","site_id":"missing"}`)
+	code, data = bearer(http.MethodPost, "/api/v1/admin/sources", `{"source_id":"nope","adapter_type":"site_fetch","config":{"site":{"site_id":"missing"}}}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("unknown site must be rejected: %d %s", code, data)
 	}
 
-	code, data = bearer(http.MethodPost, "/v1/sources/lumiproxy-elite/fetch", "")
-	if code != http.StatusOK {
-		t.Fatalf("fetch status=%d body=%s", code, data)
+	code, data = bearer(http.MethodPost, "/api/v1/admin/sources/lumiproxy-elite/fetch", "")
+	if code != http.StatusOK || strings.Contains(string(data), "not_modified") {
+		t.Fatalf("first fetch status=%d body=%s", code, data)
 	}
 	var first struct {
 		Fetched    int `json:"fetched"`
-		Added      int `json:"added"`
 		PagesDone  int `json:"pages_done"`
 		PagesTotal int `json:"pages_total"`
 	}
 	if err := json.Unmarshal(data, &first); err != nil {
 		t.Fatalf("decode fetch: %v", err)
 	}
-	if first.Fetched != 3 || first.Added != 3 || first.PagesDone < 2 || first.PagesTotal < 2 {
+	if first.Fetched != 3 || first.PagesDone < 2 || first.PagesTotal < 2 {
 		t.Fatalf("first fetch: %s", data)
 	}
 
-	// The in-memory per-source guard rejects an immediate second fetch.
-	code, _ = bearer(http.MethodPost, "/v1/sources/lumiproxy-elite/fetch", "")
-	if code != http.StatusTooManyRequests {
-		t.Fatalf("second fetch status=%d, want 429", code)
+	// Site entries live in the bounded static cache, never the pool.
+	cached, batchID, ok := e.ingest.CachedStaticCandidates("lumiproxy-elite")
+	if !ok || len(cached) != 3 || batchID == "" {
+		t.Fatalf("static cache after fetch: ok=%v batch=%q entries=%d", ok, batchID, len(cached))
 	}
+	for _, cand := range cached {
+		if !cand.Ephemeral || cand.SourceConfigVersion != 1 ||
+			cand.Offer.LocalRetentionDeadline != nil ||
+			cand.Offer.ExpiryBasis != "static_cache" || cand.Incarnation != batchID {
+			t.Fatalf("static cache candidate shape: %+v", cand)
+		}
+	}
+
+	// Under the R30 import semantics an immediate second fetch no longer
+	// 429s when the cache is fresh: the vendor window blocks real downloads,
+	// and the response explicitly replays the same batch with no additional
+	// vendor calls.
+	code, data = bearer(http.MethodPost, "/api/v1/admin/sources/lumiproxy-elite/fetch", "")
+	var second struct {
+		Fetched     int    `json:"fetched"`
+		BatchID     string `json:"batch_id"`
+		NotModified bool   `json:"not_modified"`
+	}
+	if code != http.StatusOK || json.Unmarshal(data, &second) != nil {
+		t.Fatalf("second fetch status=%d body=%s", code, data)
+	}
+	if !second.NotModified || second.BatchID != batchID || second.Fetched != 3 {
+		t.Fatalf("second fetch must replay the fresh batch without a download: %+v", second)
+	}
+	if vendorHits.Load() != 2 {
+		t.Fatalf("both pages must be fetched exactly once, hits=%d", vendorHits.Load())
+	}
+	// A read path inside the 10-minute cache TTL may keep serving this batch
+	// even after the 15-second vendor refresh window has elapsed.
 	e.ingest.Now = func() time.Time { return time.Now().Add(20 * time.Second) }
-	code, data = bearer(http.MethodPost, "/v1/sources/lumiproxy-elite/fetch", "")
-	if code != http.StatusOK {
+	if _, fetchBatch, derr := e.ingest.FetchStaticBatch(context.Background(),
+		"lumiproxy-elite", 0); derr != nil || fetchBatch != batchID {
+		t.Fatalf("fresh cache read after the vendor window: batch=%q err=%v", fetchBatch, derr)
+	}
+	if vendorHits.Load() != 2 {
+		t.Fatalf("cache-TTL read must not trigger a download, hits=%d", vendorHits.Load())
+	}
+	// Manual diagnostics may refresh after the vendor window even while the
+	// cache remains inside its longer serving TTL.
+	code, data = bearer(http.MethodPost, "/api/v1/admin/sources/lumiproxy-elite/fetch", "")
+	var again struct {
+		Fetched     int    `json:"fetched"`
+		BatchID     string `json:"batch_id"`
+		NotModified bool   `json:"not_modified"`
+	}
+	if code != http.StatusOK || json.Unmarshal(data, &again) != nil {
 		t.Fatalf("re-fetch status=%d body=%s", code, data)
 	}
-	var again struct {
-		Added   int `json:"added"`
-		Updated int `json:"updated"`
+	if again.NotModified || again.Fetched != 3 || again.BatchID == "" ||
+		again.BatchID == batchID {
+		t.Fatalf("manual refresh after the vendor window must download a new batch: %s", data)
 	}
-	if err := json.Unmarshal(data, &again); err != nil || again.Added != 0 || again.Updated != 3 {
-		t.Fatalf("re-fetch result: %s (%v)", data, err)
+	if vendorHits.Load() != 4 {
+		t.Fatalf("manual refresh must fetch both pages once, hits=%d", vendorHits.Load())
+	}
+	batchID = again.BatchID
+	// Once the cache TTL expires, the read path must also refresh.
+	e.ingest.Now = func() time.Time { return time.Now().Add(11 * time.Minute) }
+	third, thirdBatch, derr := e.ingest.FetchStaticBatch(context.Background(),
+		"lumiproxy-elite", 0)
+	if derr != nil || len(third) != 3 || thirdBatch == "" || thirdBatch == batchID {
+		t.Fatalf("TTL-expired batch fetch must download a fresh batch: entries=%d batch=%q err=%v",
+			len(third), thirdBatch, derr)
+	}
+	if vendorHits.Load() != 6 {
+		t.Fatalf("TTL-expired batch fetch must download both pages once, hits=%d",
+			vendorHits.Load())
 	}
 
 	overviews, err := e.store.SourcesOverview(context.Background())
@@ -120,7 +178,7 @@ func TestSiteFetchChannelViaAPI(t *testing.T) {
 		t.Fatalf("overview: %v %+v", err, overviews)
 	}
 	stats, err := e.store.Stats(context.Background())
-	if err != nil || stats.EnabledOffers != 3 || stats.Resources != 3 {
-		t.Fatalf("site import into pool: err=%v stats=%+v", err, stats)
+	if err != nil || stats.EnabledOffers != 0 || stats.Resources != 0 {
+		t.Fatalf("site entries must not enter the pool: err=%v stats=%+v", err, stats)
 	}
 }

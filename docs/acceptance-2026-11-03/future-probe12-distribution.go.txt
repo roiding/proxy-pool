@@ -1,0 +1,25 @@
+// NOT EXECUTED. This is a future index correction and did not produce
+// static-file-live12.json. Preserve executed-probe12.go.txt and the original JSON
+// as evidence of the failed distribution implementation.
+//
+// The original code:
+//
+//   last := n - 1
+//   return (i*last + (last / 2)) / last
+//
+// used last=1399 as the divisor for i=0..11. Because the rounded result lies
+// below 12 for every i in this range, and the next guard clamps i>=1399, the
+// emitted indices were 0..11 rather than the intended range 0..1399.
+//
+// Future implementation for round(i*(n-1)/(total-1)), total=12:
+func futureDistributedIndex(i, n, total int) int {
+	last := n - 1
+	steps := total - 1
+	if last <= 0 || steps <= 0 {
+		return 0
+	}
+	return (i*last + steps/2) / steps
+}
+
+// Expected indices for n=1400 and total=12, for review only:
+// 0, 127, 254, 382, 509, 636, 763, 890, 1017, 1145, 1272, 1399.

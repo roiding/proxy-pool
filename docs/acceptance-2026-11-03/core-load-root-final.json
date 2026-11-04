@@ -1,0 +1,368 @@
+{
+  "provenance": {
+    "generated_at": "2026-11-03T06:12:12.236686Z",
+    "started_at": "2026-11-03T06:12:11.709554Z",
+    "test": "TestCoreSyntheticBoundedLoadMetrics",
+    "go_version": "go1.25.1",
+    "goos": "darwin",
+    "goarch": "amd64",
+    "gomaxprocs": 4,
+    "source_note": "root independent final-source acceptance; 128-file tree sha256=2f65b92b6ddbeaacdd5b648cff04b725f8aa4cc8637f1b9f510d68bb5e1ff893",
+    "execution": "service-level application.Acquire calls against fresh temporary SQLite and loopback fake judge/proxy fixtures",
+    "external_calls": "none; no real vendor, static, cloud, or production endpoint calls"
+  },
+  "limitations": [
+    "Local synthetic fixture results only; no Huawei or 5000-stock target performance is measured or implied.",
+    "HTTP status is N/A because these tests call the application service directly.",
+    "Workloads with n=1 have degenerate P50/P95/P99 values equal to that single sample, not a distribution.",
+    "Goroutine high-water values are 1ms periodic samples, not absolute all-instant maxima.",
+    "Concurrency is bounded at 6 requests; these are not production throughput or capacity claims."
+  ],
+  "reports": [
+    {
+      "scenario": "shared_project_cd_concurrent",
+      "scope": "service-level, loopback fake judge/proxies, fresh tmpDB",
+      "http_status": "N/A (service-level call; no HTTP request)",
+      "workload": {
+        "requests": 6,
+        "concurrency": 6,
+        "count_per_call": 1,
+        "deadline_ms": 5000,
+        "cd_seconds": 600,
+        "max_pool_leases": 1,
+        "parallel_probes_per_request": 2,
+        "probe_slots": 4,
+        "max_active_acquires": 6,
+        "fixture": "3 distinct fake CONNECT proxies"
+      },
+      "business_status": {
+        "DELIVERED": 3,
+        "EMPTY:NO_ELIGIBLE_CANDIDATES": 3
+      },
+      "delivered": 3,
+      "missing": 3,
+      "latency_ms": {
+        "min_ms": 13.692,
+        "p50_ms": 16.812,
+        "p95_ms": 29.74,
+        "p99_ms": 29.74,
+        "max_ms": 29.74
+      },
+      "runtime_ms": 29.85,
+      "bounded": true,
+      "goroutines": {
+        "before": 7,
+        "sampled_high_1ms": 35,
+        "after": 7
+      },
+      "after_load": {
+        "sources": 1,
+        "resources": 3,
+        "enabled_offers": 3,
+        "active_leases": 3,
+        "active_reservations": 0,
+        "project_cd_rows": 3,
+        "sticky_bindings": 0,
+        "reservations_by_state": {
+          "COMMITTED": 3
+        }
+      },
+      "final": {
+        "sources": 1,
+        "resources": 3,
+        "enabled_offers": 3,
+        "active_leases": 0,
+        "active_reservations": 0,
+        "project_cd_rows": 0,
+        "sticky_bindings": 0,
+        "reservations_by_state": {
+          "COMMITTED": 3
+        }
+      },
+      "cleanup": [
+        "released 3 delivered leases",
+        "removed 3 expired project-CD rows at a deterministic future maintenance time"
+      ],
+      "observations": {
+        "project_cd_scope": "shared across all concurrent requests",
+        "unique_connections": 3
+      }
+    },
+    {
+      "scenario": "capacity_limit",
+      "scope": "service-level, loopback fake judge/proxy, fresh tmpDB",
+      "http_status": "N/A (service-level call; no HTTP request)",
+      "workload": {
+        "requests": 6,
+        "concurrency": 6,
+        "count_per_call": 1,
+        "deadline_ms": 5000,
+        "cd_seconds": 0,
+        "max_pool_leases": 2,
+        "parallel_probes_per_request": 2,
+        "probe_slots": 2,
+        "max_active_acquires": 6,
+        "fixture": "one fake CONNECT proxy with capacity 2"
+      },
+      "business_status": {
+        "DELIVERED": 2,
+        "EMPTY:NO_ELIGIBLE_CANDIDATES": 4
+      },
+      "delivered": 2,
+      "missing": 4,
+      "latency_ms": {
+        "min_ms": 8.326,
+        "p50_ms": 17.615,
+        "p95_ms": 19.38,
+        "p99_ms": 19.38,
+        "max_ms": 19.38
+      },
+      "runtime_ms": 19.459,
+      "bounded": true,
+      "goroutines": {
+        "before": 10,
+        "sampled_high_1ms": 38,
+        "after": 10
+      },
+      "after_load": {
+        "sources": 1,
+        "resources": 1,
+        "enabled_offers": 1,
+        "active_leases": 2,
+        "active_reservations": 0,
+        "project_cd_rows": 0,
+        "sticky_bindings": 0,
+        "reservations_by_state": {
+          "COMMITTED": 2
+        }
+      },
+      "final": {
+        "sources": 1,
+        "resources": 1,
+        "enabled_offers": 1,
+        "active_leases": 0,
+        "active_reservations": 0,
+        "project_cd_rows": 0,
+        "sticky_bindings": 0,
+        "reservations_by_state": {
+          "COMMITTED": 2
+        }
+      },
+      "cleanup": [
+        "released 2 active leases"
+      ],
+      "observations": {
+        "max_pool_leases": 2,
+        "no_project_cd": true
+      }
+    },
+    {
+      "scenario": "partial_result",
+      "scope": "service-level, loopback fake judge/proxy, fresh tmpDB",
+      "http_status": "N/A (service-level call; no HTTP request)",
+      "workload": {
+        "requests": 1,
+        "concurrency": 1,
+        "count_per_call": 2,
+        "deadline_ms": 1200,
+        "cd_seconds": 0,
+        "max_pool_leases": 1,
+        "parallel_probes_per_request": 2,
+        "probe_slots": 2,
+        "max_active_acquires": 2,
+        "fixture": "one fake CONNECT proxy for a two-connection request"
+      },
+      "business_status": {
+        "PARTIAL:NO_ELIGIBLE_CANDIDATES": 1
+      },
+      "delivered": 1,
+      "missing": 1,
+      "latency_ms": {
+        "min_ms": 10.441,
+        "p50_ms": 10.441,
+        "p95_ms": 10.441,
+        "p99_ms": 10.441,
+        "max_ms": 10.441
+      },
+      "runtime_ms": 10.456,
+      "bounded": true,
+      "goroutines": {
+        "before": 13,
+        "sampled_high_1ms": 23,
+        "after": 13
+      },
+      "after_load": {
+        "sources": 1,
+        "resources": 1,
+        "enabled_offers": 1,
+        "active_leases": 1,
+        "active_reservations": 0,
+        "project_cd_rows": 0,
+        "sticky_bindings": 0,
+        "reservations_by_state": {
+          "COMMITTED": 1
+        }
+      },
+      "final": {
+        "sources": 1,
+        "resources": 1,
+        "enabled_offers": 1,
+        "active_leases": 0,
+        "active_reservations": 0,
+        "project_cd_rows": 0,
+        "sticky_bindings": 0,
+        "reservations_by_state": {
+          "COMMITTED": 1
+        }
+      },
+      "cleanup": [
+        "released 1 delivered lease"
+      ]
+    },
+    {
+      "scenario": "deadline",
+      "scope": "service-level, loopback fake judge/proxy, fresh tmpDB",
+      "http_status": "N/A (service-level call; no HTTP request)",
+      "workload": {
+        "requests": 1,
+        "concurrency": 1,
+        "count_per_call": 1,
+        "deadline_ms": 500,
+        "cd_seconds": 0,
+        "max_pool_leases": 1,
+        "parallel_probes_per_request": 1,
+        "probe_slots": 1,
+        "max_active_acquires": 2,
+        "fixture": "one blocking fake CONNECT proxy"
+      },
+      "business_status": {
+        "EMPTY:VALIDATION_BUDGET_EXHAUSTED": 1
+      },
+      "delivered": 0,
+      "missing": 1,
+      "latency_ms": {
+        "min_ms": 379.497,
+        "p50_ms": 379.497,
+        "p95_ms": 379.497,
+        "p99_ms": 379.497,
+        "max_ms": 379.497
+      },
+      "runtime_ms": 379.497,
+      "bounded": true,
+      "goroutines": {
+        "before": 16,
+        "sampled_high_1ms": 23,
+        "after": 16
+      },
+      "after_load": {
+        "sources": 1,
+        "resources": 1,
+        "enabled_offers": 1,
+        "active_leases": 0,
+        "active_reservations": 0,
+        "project_cd_rows": 0,
+        "sticky_bindings": 0,
+        "reservations_by_state": {
+          "RELEASED": 1
+        }
+      },
+      "final": {
+        "sources": 1,
+        "resources": 1,
+        "enabled_offers": 1,
+        "active_leases": 0,
+        "active_reservations": 0,
+        "project_cd_rows": 0,
+        "sticky_bindings": 0,
+        "reservations_by_state": {
+          "RELEASED": 1
+        }
+      },
+      "cleanup": [
+        "released 0 delivered leases"
+      ],
+      "observations": {
+        "blocking_proxy_hits": 1
+      }
+    },
+    {
+      "scenario": "caller_cancel",
+      "scope": "service-level, loopback fake judge/proxy, fresh tmpDB",
+      "http_status": "N/A (service-level call; no HTTP request)",
+      "workload": {
+        "requests": 1,
+        "concurrency": 1,
+        "count_per_call": 1,
+        "deadline_ms": 3000,
+        "cd_seconds": 0,
+        "max_pool_leases": 1,
+        "parallel_probes_per_request": 1,
+        "probe_slots": 1,
+        "max_active_acquires": 2,
+        "fixture": "one blocking fake CONNECT proxy, caller cancellation after reservation"
+      },
+      "business_status": {
+        "EMPTY:VALIDATION_BUDGET_EXHAUSTED": 1
+      },
+      "delivered": 0,
+      "missing": 1,
+      "latency_ms": {
+        "min_ms": 3.011,
+        "p50_ms": 3.011,
+        "p95_ms": 3.011,
+        "p99_ms": 3.011,
+        "max_ms": 3.011
+      },
+      "runtime_ms": 3.046,
+      "bounded": true,
+      "goroutines": {
+        "before": 19,
+        "sampled_high_1ms": 24,
+        "after": 19
+      },
+      "during": {
+        "sources": 1,
+        "resources": 1,
+        "enabled_offers": 1,
+        "active_leases": 0,
+        "active_reservations": 1,
+        "project_cd_rows": 0,
+        "sticky_bindings": 0,
+        "reservations_by_state": {
+          "RESERVED": 1
+        }
+      },
+      "after_load": {
+        "sources": 1,
+        "resources": 1,
+        "enabled_offers": 1,
+        "active_leases": 0,
+        "active_reservations": 0,
+        "project_cd_rows": 0,
+        "sticky_bindings": 0,
+        "reservations_by_state": {
+          "RELEASED": 1
+        }
+      },
+      "final": {
+        "sources": 1,
+        "resources": 1,
+        "enabled_offers": 1,
+        "active_leases": 0,
+        "active_reservations": 0,
+        "project_cd_rows": 0,
+        "sticky_bindings": 0,
+        "reservations_by_state": {
+          "RELEASED": 1
+        }
+      },
+      "cleanup": [
+        "released 0 delivered leases"
+      ],
+      "observations": {
+        "active_reservations_before_cancel": 1,
+        "blocking_proxy_hits": 1
+      }
+    }
+  ]
+}

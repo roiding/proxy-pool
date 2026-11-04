@@ -17,7 +17,7 @@ func recordObservation(ctx context.Context, store *sqlite.Store, geo geoip.Resol
 	if ev.ObservedExitIP == "" {
 		return nil
 	}
-	obs := domain.Observation{ExitIP: ev.ObservedExitIP, ObservedAt: now}
+	obs := domain.Observation{ExitIP: ev.ObservedExitIP, ObservedAt: now.UTC()}
 	if geo != nil {
 		if ip, err := netip.ParseAddr(ev.ObservedExitIP); err == nil {
 			if loc, ok := geo.Lookup(ip); ok {

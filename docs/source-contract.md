@@ -1,16 +1,27 @@
 # Source Integration Contract
 
-Version: 0.8. Status: the `lines_v1` custom family is implemented, and the
-first provider adapter family (`provider_api` + `json_mapping_v1`, the
-proxy.scdn.io get_proxy API) is implemented under
+Version: 0.9 (requirements clarified 2026-11-02). Status: the durable custom
+Importer is implemented with `lines_v1` text, structured custom JSON,
+source-scoped upload keys, batch idempotency, and result queries. The first
+provider adapter family (`provider_api` + `json_mapping_v1`, the proxy.scdn.io
+get_proxy API) is implemented under
 `internal/integrations/scdn/`. Further provider families follow the same
 one-channel-at-a-time path. Source-level circuits, demand refill, prewarm, and
 offline exit-IP/geo observations are implemented in the shared acquisition
 path.
 
+Product rules follow [the repositioning plan, updated 2026-11-02](project-repositioning-plan-2026-11-01.md).
+File uploads and API pushes are equivalent inputs to the same persistent
+custom inventory. Static URL lists retain their bounded TTL cache, while
+on-demand provider API candidates remain request-local. The custom Importer
+accepts text and structured JSON through both the admin and upload-key entry
+points and enforces the same authorization, inventory, and retention rules.
+
 This contract allows formats to be added one channel at a time without changing
-the acquisition, validation, lease, or eviction workflows. Read it together
-with [the architecture specification](architecture.md).
+the acquisition, validation, lease, or eviction workflows. The older
+[architecture specification](architecture.md) is a reference where it agrees
+with the repositioning plan; illustrative parser families below do not imply
+implemented support.
 
 ## 1. Separate the Three Boundaries
 
@@ -190,15 +201,22 @@ Implement only families backed by real sample inputs:
 | Parser family | Example | Required explicit configuration |
 | --- | --- | --- |
 | `lines_v1` | One `host:port` or supported proxy URI per line | Default transport, accepted URI syntax, auth defaults, TTL/retention policy |
+| Structured custom JSON | `items` array containing `connection` and optional `provider_expires_at` | Same normalized connection schema and additive inventory semantics as text imports |
 | `json_mapping_v1` | Array or nested provider list | Item path, field names, error envelope, protocol semantics, expiry units/zone |
 | `csv_mapping_v1` | Header-based rows | Encoding, delimiter, columns, time semantics, credential fields |
 | Vendor parser module | Signed/encoded/nested proprietary format | Versioned fixtures, semantic conversion, limits, error handling |
 
-Custom resource entry points are normalized through the same ingestion service:
+Custom resource entry points are normalized through the same ingestion service
+and write to the same persistent inventory:
 
-- Admin request body containing structured candidates.
-- Authorized text/file upload; no arbitrary server filesystem path from clients.
+- Authorized programmatic text push or file-content upload, using `lines_v1`.
+- Structured JSON candidate batches, using the schema in
+  [the import requirements](project-repositioning-plan-2026-11-01.md#101-文件上传与-api-推送).
 - Configuration-owned static endpoint/gateway definitions.
+
+Clients submit file contents, not arbitrary server filesystem paths. Files and
+API pushes may use the same source or different authorized sources; the entry
+method does not create a separate pool, connection identity, or CD scope.
 
 Supported line forms should be declared, not inferred endlessly. URI examples
 may include `http://host:port`, `socks5://host:port`, percent-encoded
@@ -206,18 +224,91 @@ authenticated URIs, and bracketed IPv6. A bare `host:port` requires a
 source-configured transport. Credentials with reserved characters require
 proper encoding or structured fields.
 
-Self-upload additive semantics (implemented): each line's source-record ID is
+Custom additive semantics: each line's source-record ID is
 the content fingerprint of its transport/host/port/credentials, so uploads are
-append-only and identical re-updates update offers in place. There is no
-snapshot replacement; dead supply is cleaned up by validation instead
-(authentication failures immediately, other attributed failures via the
-consecutive-failure threshold with tombstones). Self-uploaded sources are the
-only ones eligible for bounded periodic revalidation, which refreshes health
-evidence but never authorizes delivery.
+append-only and identical re-updates preserve source relationships, health,
+and project CD. This applies equally when the same connection arrives through
+a file and an API push. There is no snapshot replacement. Explicitly failed
+connections are removed under the plan's failure classification, without
+tombstones; repeated uncertain timeouts alone do not establish permanent
+failure. New imports begin unvalidated. The shared custom inventory receives
+bounded periodic revalidation, and delivery still checks current eligibility.
 
-Do not initially add executable "custom fetch scripts", arbitrary remote import
-URLs, webhook callbacks, provider reservation/release APIs, or unknown formats.
-They can be added behind explicit capability/security contracts when requested.
+Static URL downloads use the configured bounded downloader and separate cache;
+cache expiry never deletes file/API-imported inventory. Executable "custom
+fetch scripts", webhook callbacks, provider reservation/release APIs, and
+unknown formats remain outside the initial contract.
+
+### 5.5 Importer Contract
+
+The admin entry (`POST /api/v1/admin/sources/{source_id}/imports`) and the
+upload-key entry (`POST /api/v1/sources/{source_id}/imports`) call the same
+durable importer. Both accept exactly one of:
+
+- `text/plain`: one `http://[user:pass@]host:port` or
+  `socks5://[user:pass@]host:port` URI per line. Blank lines and lines starting
+  with `#` are ignored. A bare `host:port` uses the source's configured default
+  transport.
+- `application/json`: one object containing an `items` array. Each item has a
+  `connection` object and may include a UTC RFC 3339 `provider_expires_at`.
+
+```json
+{
+  "items": [
+    {
+      "connection": {
+        "transport": "http",
+        "host": "203.0.113.10",
+        "port": 8080,
+        "username": "user",
+        "password": "p@ss"
+      },
+      "provider_expires_at": null
+    }
+  ]
+}
+```
+
+`transport` is exactly `http` or `socks5`. Unknown envelope fields, a trailing
+JSON value, and a missing or non-array `items` reject the whole batch. A
+malformed item, including an unknown item field or invalid connection, is
+isolated with a sanitized row error while valid items still append. Raw
+credentials are never echoed in errors.
+
+The published limits are:
+
+| Resource | Limit |
+| --- | --- |
+| Request body | 8 MiB |
+| Items per batch | 10,000 |
+| JSON username or password | 256 bytes each |
+| Stored error details | 100 entries per batch; `rejected` remains complete |
+| Batch result and idempotency retention | 7 days |
+| Idempotency-Key | 128 characters |
+
+Upload keys are the only non-admin credentials accepted by the program entry.
+They are bound to an explicit source allowlist and may push only there. Their
+batches and result queries are scoped to the key identity; the key cannot use
+the admin entry or acquire proxies. The handler passes the authenticated key ID
+to the importer as trusted identity. It never derives authorization from a
+request header, uploader label, or other caller-supplied text.
+
+The source row is read for parsing, then its enabled state, custom adapter type,
+`config_version`, and the upload key's enabled and source-bound state are
+rechecked inside the commit transaction, before idempotency lookup. A key
+disabled, deleted, or unbound while the request is in flight therefore rejects
+both a new batch and a replay without mutating inventory, batch records, or
+idempotency records. A source edit or delete-and-recreate under the same ID
+likewise rejects a stale apply/replay.
+
+An optional `Idempotency-Key` is scoped to the authenticated uploader and
+source. The same key with the same body hash returns the stored batch and
+`import_id`; different content returns 409. The first application returns 201
+and a replay returns 200. A result has a stable `import_id`, `source_id`,
+`status`, `added`, `updated`, `duplicate`, `rejected`, bounded `errors`, and
+`created_at`. Inventory changes and the batch/idempotency records commit in one
+transaction. Import success never creates PASS evidence or a verified
+observation; new candidates still require normal validation.
 
 ## 6. Provider Error Contract
 

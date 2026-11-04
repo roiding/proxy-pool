@@ -1,0 +1,172 @@
+package main
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+
+	"proxypool/internal/domain"
+	"proxypool/internal/integrations/custom"
+	"proxypool/internal/validation"
+)
+
+const (
+	inputPath = "/Users/roiding/Downloads/11.02-7PM-1.txt"
+	wantBytes = 78278
+	wantSHA   = "1c315c5240fc0c248bdd3de61a686b87d9bb95d1f75a09627aea3ccb484b9237"
+	target    = "example.com:443"
+	total     = 12
+)
+
+type report struct {
+	Input     inputSummary     `json:"input"`
+	Probe     probeSummary     `json:"probe"`
+	Aggregate aggregate        `json:"aggregate"`
+	Samples   []sample         `json:"samples"`
+	Failures  []failureSummary `json:"failures"`
+}
+
+type inputSummary struct {
+	Bytes    int    `json:"bytes"`
+	SHA256   string `json:"sha256"`
+	Records  int    `json:"records"`
+	Accepted int    `json:"accepted"`
+	Rejected int    `json:"rejected"`
+}
+
+type probeSummary struct {
+	Target                string `json:"target"`
+	Method                string `json:"method"`
+	DeadlinePerSample     string `json:"deadline_per_sample"`
+	TargetApplicationHTTP bool   `json:"target_application_http"`
+	CertificateVerified   bool   `json:"certificate_verified"`
+}
+
+type aggregate struct {
+	Attempted      int            `json:"attempted"`
+	PASS           int            `json:"pass"`
+	FAIL           int            `json:"fail"`
+	FailureByClass map[string]int `json:"failure_by_class"`
+}
+
+type sample struct {
+	Index     int    `json:"index"`
+	Transport string `json:"transport"`
+	Result    string `json:"result"`
+	Class     string `json:"class,omitempty"`
+	LatencyMS int64  `json:"latency_ms"`
+}
+
+type failureSummary struct {
+	Class   string `json:"class"`
+	Count   int    `json:"count"`
+	Indices []int  `json:"indices"`
+}
+
+func main() {
+	body, err := os.ReadFile(inputPath)
+	must(err)
+	sum := sha256.Sum256(body)
+	digest := hex.EncodeToString(sum[:])
+	if len(body) != wantBytes || digest != wantSHA {
+		must(fmt.Errorf("input contract mismatch: bytes=%d sha256=%s", len(body), digest))
+	}
+
+	parsed, rejected := custom.ParseLines(custom.LinesOptions{
+		DefaultTransport: domain.TransportHTTP,
+	}, string(body))
+	if len(rejected) != 0 {
+		must(fmt.Errorf("input parser rejected %d lines", len(rejected)))
+	}
+	if len(parsed) != 1400 {
+		must(fmt.Errorf("input parser record count=%d, want 1400", len(parsed)))
+	}
+
+	out := report{
+		Input: inputSummary{Bytes: len(body), SHA256: digest, Records: len(parsed),
+			Accepted: len(parsed), Rejected: len(rejected)},
+		Probe: probeSummary{Target: target, Method: "CONNECT/SOCKS5 + TLS 1.2+ certificate-verified handshake",
+			DeadlinePerSample: "5s", TargetApplicationHTTP: false, CertificateVerified: true},
+		Aggregate: aggregate{Attempted: total, FailureByClass: map[string]int{}},
+		Samples:   make([]sample, 0, total),
+	}
+
+	for i := 0; i < total; i++ {
+		idx := distributedIndex(i, len(parsed))
+		conn := parsed[idx].Conn
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		started := time.Now()
+		_, fail := validation.Probe(ctx, domain.ValidationScope{
+			Mode: "tls", TargetHostPort: target, Profile: validation.ProfileTargetTLSV1,
+			SecurityHash: validation.SecurityHashV1,
+		}, conn, validation.ProbeOptions{Limits: validation.ProbeLimits{
+			DialTimeout: 5 * time.Second, ProbeTotal: 5 * time.Second,
+		}}, fmt.Sprintf("static-file-live-%02d", i))
+		cancel()
+		item := sample{Index: idx, Transport: string(conn.Transport), LatencyMS: time.Since(started).Milliseconds()}
+		if fail == nil {
+			item.Result = "PASS"
+			out.Aggregate.PASS++
+		} else {
+			item.Result = "FAIL"
+			item.Class = fail.Kind
+			out.Aggregate.FAIL++
+			out.Aggregate.FailureByClass[fail.Kind]++
+		}
+		out.Samples = append(out.Samples, item)
+	}
+
+	for class, count := range out.Aggregate.FailureByClass {
+		entry := failureSummary{Class: class, Count: count}
+		for _, item := range out.Samples {
+			if item.Class == class {
+				entry.Indices = append(entry.Indices, item.Index)
+			}
+		}
+		sort.Ints(entry.Indices)
+		out.Failures = append(out.Failures, entry)
+	}
+	sort.Slice(out.Failures, func(i, j int) bool {
+		return out.Failures[i].Class < out.Failures[j].Class
+	})
+
+	outDir := "docs/acceptance-2026-11-03"
+	must(os.MkdirAll(outDir, 0o755))
+	data, err := json.MarshalIndent(out, "", "  ")
+	must(err)
+	data = append(data, '\n')
+	must(os.WriteFile(filepath.Join(outDir, "static-file-live12.json"), data, 0o600))
+	fmt.Printf("input_bytes=%d sha256=%s records=%d attempted=%d PASS=%d FAIL=%d\n",
+		out.Input.Bytes, out.Input.SHA256, out.Input.Records,
+		out.Aggregate.Attempted, out.Aggregate.PASS, out.Aggregate.FAIL)
+	for _, item := range out.Samples {
+		fmt.Printf("sample=%02d index=%d transport=%s result=%s class=%s latency_ms=%d\n",
+			item.Index, item.Index, item.Transport, item.Result, item.Class, item.LatencyMS)
+	}
+}
+
+// distributedIndex implements round(i * 1399 / 11) with integer arithmetic.
+func distributedIndex(i, n int) int {
+	if n <= 1 || i <= 0 {
+		return 0
+	}
+	last := n - 1
+	if i >= last {
+		return last
+	}
+	return (i*last + (last / 2)) / last
+}
+
+func must(err error) {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "probe12:", err)
+		os.Exit(1)
+	}
+}

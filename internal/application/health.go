@@ -24,17 +24,32 @@ type HealthRecorder struct {
 }
 
 func (h *HealthRecorder) Record(ctx context.Context, resourceID, contextKey, profile, outcome string) error {
+	return h.record(ctx, resourceID, contextKey, profile, outcome, "")
+}
+
+// RecordScoped pins the health write to the resource incarnation the probe
+// selected, so a delete + re-import between probe start and completion can
+// never attach the stale result to the recreated candidate.
+func (h *HealthRecorder) RecordScoped(ctx context.Context, resourceID, contextKey,
+	profile, outcome, incarnation string) error {
+	return h.record(ctx, resourceID, contextKey, profile, outcome, incarnation)
+}
+
+func (h *HealthRecorder) record(ctx context.Context, resourceID, contextKey,
+	profile, outcome, incarnation string) error {
 	now := h.Now()
 	if outcome == "PASS" {
 		return h.Store.UpdateHealth(ctx, sqlite.HealthUpdate{
-			ResourceID: resourceID,
-			ContextKey: contextKey,
-			Profile:    profile,
-			Outcome:    "PASS",
-			Now:        now,
+			ResourceID:  resourceID,
+			ContextKey:  contextKey,
+			Profile:     profile,
+			Outcome:     "PASS",
+			Incarnation: incarnation,
+			Now:         now,
 		})
 	}
-	health, err := h.Store.CurrentHealth(ctx, resourceID, contextKey, profile)
+	health, err := h.Store.CurrentHealthGuarded(ctx, resourceID, contextKey,
+		profile, incarnation)
 	if err != nil {
 		return err
 	}
@@ -46,6 +61,7 @@ func (h *HealthRecorder) Record(ctx context.Context, resourceID, contextKey, pro
 		Profile:       profile,
 		Outcome:       "FAIL",
 		CooldownUntil: &until,
+		Incarnation:   incarnation,
 		Now:           now,
 	})
 }

@@ -1,359 +1,401 @@
 # Proxy Pool
 
-An extensible proxy-resource pool with strict, request-time validation.
+A single-node proxy supply service: it finds, validates, and issues proxies to
+downstream projects. It does not relay downstream business traffic, and it does
+not implement stock-site scraping, login, CAPTCHA, or response-body handling.
 
-Status: v0.9, 2026-11-01. The Go vertical slice plus the self-upload workflow
-(web console with session login, additive imports, nightly full validation and
-dead-proxy cleanup, per-source daily success rates, built-in signed judge) and
-the first provider API channel (proxy.scdn.io), source circuits, demand
-refill, target-count prewarming, and offline geo observations are implemented
-and tested, together with downstream API keys and per-channel proxy cooldowns.
-Remaining work is listed under Implementation status.
-The default deployment targets one Huawei Cloud Flexus L instance with 2 CPU
-cores and 1 GiB RAM; a container build is provided for final deployment.
+This README describes the current implementation. The binding product rules
+are in [the repositioning plan, updated 2026-11-02](docs/project-repositioning-plan-2026-11-01.md).
+Older architecture documents and old API examples are historical references
+where they conflict with that plan.
 
-## Core Contract
+## Current Contract
 
-Every proxy returned by an acquisition request must pass a new validation
-attempt belonging to that delivery request, before the response is sent.
-
-The inventory stores candidates, not a continuously verified "available pool".
-Historical validation results help select candidates; they never authorize a
-new delivery. Self-uploaded custom sources additionally get one full validation
-pass per night (configurable time, default 03:00 local) that refreshes health
-and retires repeatedly dead proxies; provider-API inventory is not swept, and
-idle provider inventory never generates liveness probes.
+- Downstream projects authenticate with a project API key. A project may hold
+  several keys; rotating or deleting one key does not remove its project's CD.
+- Project CD is keyed by the stable project and the actual connection
+  fingerprint. The stored expiration is fixed at delivery. A later `cd`
+  reduction, `cd: 0`, a new key, or a different source cannot shorten it.
+- On-demand provider candidates are request-local and never enter public
+  inventory. Static-list results use a separate bounded TTL cache and may
+  supply public acquisition, but they are not written to persistent
+  inventory. Only uploaded custom inventory is persistent candidate stock.
+- Recent passing evidence may be reused only for the same validation scope
+  and current source configuration. Target TLS evidence for one target cannot
+  authorize another target; basic validation cannot impersonate TLS.
+- A proxy whose authentication is explicitly rejected is removed. Uncertain
+  timeouts, target failures, rate limits, and infrastructure failures are
+  classified separately and are not converted into a tombstone or permanent
+  blacklist.
+- A successful acquire returns HTTP 200 with the delivered items and a
+  shortfall reason even when delivery is partial or empty. Invalid request
+  fields return 400; authentication failures return 401; authorization
+  failures return 403; persistence failures do not masquerade as supply
+  shortage.
+- `count` defaults to 1 only when omitted. `null`, zero, negative, or
+  out-of-range values are rejected. Country entries must be non-empty
+  two-letter codes. `source_ids: null` means project scope, while `[]` means
+  no source is allowed.
+- Sticky mode is opt-in and requires a non-empty `session_id` with `count: 1`.
+  `sticky_binding_ttl_ms` owns the logical binding lifetime independently of
+  `default_lease_ttl_ms`; delivering a lease never extends the binding. An
+  existing binding for that project and session may reuse the connection, but
+  a new session does not inherit it. If its cached proof ages out, the service
+  re-probes the same bound connection and commits refreshed evidence without
+  fetching another proxy or opening another project CD window.
 
 ```text
-Provider APIs / custom resources
-             |
-   Adapter -> Parser -> Normalizer
-             |
-       Candidate inventory
-             |
-Downstream request -> Select -> Reserve -> Validate
-                                            |
-                              pass -> Commit lease -> Return
-                              fail -> Classify -> Try another candidate
+Provider API / static lists / uploaded inventory
+                    |
+              source adapters
+                    |
+      project scope + CD + health filters
+                    |
+          bounded request-time probes
+                    |
+      atomic lease + project CD + binding
+                    |
+               JSON response
 ```
 
-Validation confirms an observation under a specified probe profile. It cannot
-guarantee that a later business request will succeed, or that a rotating
-gateway will use the same exit IP for the next connection.
+The service cannot promise that a later business request succeeds, that a
+rotating gateway keeps the same exit IP, or that a free public proxy remains
+available.
 
-## Design Documents
+## Downstream API
 
-- [Architecture and lifecycle specification](docs/architecture.md): components,
-  request flows, reservations, leases, validation, eviction, APIs, storage,
-  security, operational limits, and acceptance criteria.
-- [Source integration contract](docs/source-contract.md): the stable boundary
-  for adding provider formats and custom resources one at a time.
-- [Low-memory Go deployment](docs/deployment-go-lite.md): the default Go/SQLite
-  stack, bounded work, memory controls, build constraints, and measurement plan.
+All downstream calls use `Authorization: Bearer <project-key>` (or
+`X-API-Key`). Credentials in the URL and old `/v1` aliases are not accepted.
 
-## Web Console
+### Acquire
 
-`GET /admin` serves an embedded single-page console (no external assets).
-Login with the configured API token issues an HttpOnly session cookie (12-hour,
-SameSite=Strict, in-memory server-side session so logout works; cookie
-mutations also require a fetch-only header as a CSRF guard). The console
-uploads/pastes `lines_v1` txt lists, creates provider API channels, and shows
-pool stats, per-source health, and each source's validation success rate for
-the current day. It also manages downstream API keys and target-count
-prewarming. Custom-source rows have a manual "验活" button that starts an
-immediate validation pass; provider rows have a "拉取" button that fetches one
-vendor batch. Progress (probed/retired counters) is polled live and the
-buttons are disabled while a pass is running (single-flight, shared probe
-slots).
+`POST /api/v1/proxies/acquire`
 
-## Provider API Channels
-
-The first provider channel is [proxy.scdn.io](https://proxy.scdn.io/api_docs.php),
-registered as the `provider_api` adapter with a `json_mapping_v1` parser.
-
-```sh
-# Create a channel (protocol declares the transport mapping; batch max 20)
-curl -X POST http://127.0.0.1:8080/v1/sources -H "Authorization: Bearer $TOKEN" \
-  -d '{"source_id":"scdn","adapter_type":"provider_api","protocol":"http","fetch_count":20}'
-
-# Pull one vendor batch (additive import; can be repeated from the console)
-curl -X POST http://127.0.0.1:8080/v1/sources/scdn/fetch -H "Authorization: Bearer $TOKEN"
+```json
+{
+  "count": 2,
+  "timeout": 30,
+  "cd": 600,
+  "country": ["CN"],
+  "protocols": ["http"],
+  "source_ids": ["upload-main"],
+  "validation": {"mode": "tls", "target": "api.example.com:443"}
+}
 ```
 
-Semantics and limits:
+| Field | Meaning |
+| --- | --- |
+| `count` | Required positive count if supplied; default 1 only when omitted. Bounded by server config. |
+| `timeout` | Whole-request budget in seconds. It covers queueing, refill, probing, source switching, and finalization. |
+| `cd` | New-window seconds. Does not shorten existing project CD windows. |
+| `country` | Optional two-letter ISO country filters. Unknown observations must be verified before matching. |
+| `protocols` | Optional `http` / `socks5` filters. |
+| `source_ids` | Optional source scope. Omitted/null uses project scope; `[]` means none. |
+| `validation` | Omit for project/global default. `tls` requires `host:port`; only TLS handshake/certificate verification occurs, not a business HTTP request. |
+| `mode` / `session_id` | `ordinary` by default. `sticky` requires `session_id` and `count: 1`. |
 
-- The vendor returns bare `host:port` entries with no expiry and no per-proxy
-  protocol metadata, so `protocol` is the declared transport: `http` and
-  `https` map to the pool's http transport (https additionally stores a
-  `vendor_protocol` claim), `socks5` maps to socks5. `all` and `socks4` are
-  rejected at creation instead of being guessed.
-- Fetches are additive and idempotent per content fingerprint, single-flight
-  per source, and guarded by a minimum interval (default 1s, configurable via
-  `min_fetch_interval_ms` in the channel creation body). The payload is
-  bounded (64 KiB), the envelope (`code`/`message`) is checked, and invalid
-  rows are reported as `rejected` without failing the batch.
-- Provider offers carry no provider expiry; they live under the pool's
-  retention policy (`local_retention_ms`, when set). Delivery still requires a
-  fresh request-time validation — importing never authorizes a proxy.
-- Provider sources are never swept nightly. Dead supply is retired by
-  maintenance once acquire-attempt evidence reaches the
-  `custom_nightly_retire_failures` threshold, and re-fetching a tombstoned
-  proxy cannot revive it.
+A result includes `requested`, `delivered`, `missing`, `items`, and a `reason`
+only when supply is short. Each item carries the source,
+`connection.transport`, host, port, credentials (raw strings; an
+authenticated connection always serializes `password`, including `""`), a
+convenience `proxy_uri` (URI-encoded userinfo, bracketed IPv6), `observed`
+evidence when real measurements exist, `validation` (with the actual
+proof-reuse `valid_until`), `lease_expires_at`, and `provider_expires_at`
+(`null` when the supplier declared no expiry). All timestamps are UTC
+RFC 3339 and credential-bearing responses set `Cache-Control: no-store`.
 
-### Free Site Channels
+Sticky responses add `session_id`, `binding_version`, `session_changed`
+(always an explicit boolean, including `false`), `binding_expires_at`, and
+`change_reason` only on rebind. Ordinary responses omit these session-only
+fields entirely.
 
-`site_fetch` channels import curated free-proxy list pages into the normal
-pool. The catalog (`internal/integrations/sites`) defines one entry per site
-with a code-owned parser (HTML tables, aria-role cell tables, embedded
-`fpsList` JSON, `data.list` JSON, or `ip:port` text). Each fetch walks a
-bounded number of pages (max 20, per-page body cap 512 KiB, per-page
-delay, stop after three empty pages) and imports additively like a custom
-upload, so nightly validation and acquire evidence keep quality honest.
+HTTP proxies may reach HTTPS targets through CONNECT; TLS to the proxy itself
+(`transport: https`) is not currently supported.
 
-Create a channel from the console's 免费站点源 card or via API:
+### Registration Client Integration
 
-```sh
-curl -X POST http://127.0.0.1:8080/v1/sources -H "Authorization: Bearer $TOKEN" \
-  -d '{"source_id":"lumiproxy-elite","adapter_type":"site_fetch","site_id":"lumiproxy-elite","max_pool_leases":1}'
-curl -X POST http://127.0.0.1:8080/v1/sources/lumiproxy-elite/fetch -H "Authorization: Bearer $TOKEN"
-```
+The registration tool (注册机) is an independent downstream program; this
+service ships no registration/stock business logic. It authenticates with its
+own project key exactly like any other consumer. For flows that benefit from
+a logical binding it may pass `mode: "sticky"` with a `session_id`; the
+program decides how to continue when `session_changed` is true.
 
-`GET /v1/admin/sites` returns the catalog. Every channel was verified live
-from the Singapore deployment on 2026-11-01 with
-`go run ./cmd/sitecheck -max-pages 1` (rerun it to re-check; `-json` prints
-machine-readable results):
+Sticky bindings identify this service's logical connection, not a vendor
+guarantee of a stable exit IP. The registration client must treat
+`session_changed`, lease expiry, and validation evidence as first-class
+signals instead of assuming the same exit address for a whole registration
+run. Pushing proxies into the pool is a separately authorized operation: a
+program that both acquires and uploads uses a project key for acquisition and
+its own upload key for imports (below).
 
-| Channel | Parser | First-page entries |
-| --- | --- | --- |
-| `ip3366-normal` 云代理(普通) | table_2col | 15 |
-| `ip89` 89免费代理 | text | ~3000 |
-| `jiliuip-elite` 积流代理(高匿) | role_cells | 9 |
-| `qiyunip-elite` 齐云代理(高匿) | table_th | 15 |
-| `lumiproxy-transparent/anon/elite` | json_list | 24 each |
-| `proxyscrape-anon/elite` | text | 752 / 355 |
-| `openproxylist-http/https` | text | ~6400 / ~5100 |
+### Program Imports (Upload Keys)
 
-Sources that no longer work (checked the same day) are excluded instead of
-shipped dead: kuaidaili (JS anti-bot challenge), kxdaili (TLS handshake
-failure), ip3366 elite route (HTTP 521), 911Proxy/ProxyLite/ProxyShare free
-list APIs (404), FineProxy (404). The reference implementation for several
-parsers is [fog-forest/free-proxy-pool](https://github.com/fog-forest/free-proxy-pool) (MIT).
+External programs push proxies with an upload key (`uk_…`), which authorizes
+nothing except imports into its listed sources and reading its own batch
+results. It cannot acquire proxies or call any admin endpoint.
 
-## Dynamic Scheduling
+- `POST /api/v1/sources/{source_id}/imports` with `text/plain`
+  (`http://[user:pass@]host:port` / `socks5://…` lines) or `application/json`
+  (`{"items":[{"connection":{...},"provider_expires_at":null}]}`). First
+  application returns 201, a replayed batch returns 200.
+- `Idempotency-Key` is optional (1–128 characters, scoped to the upload key
+  and source). The same key with different content is a 409 conflict.
+- The result reports `import_id`, `added`, `updated`, `duplicate`,
+  `rejected` (count) and a bounded `errors` array with sanitized messages.
+  Structural body errors reject the whole batch; invalid items are reported
+  while legal items still append.
+- `GET /api/v1/sources/{source_id}/imports/{import_id}` returns a stored
+  batch result. Upload keys can read only their own batches on their own
+  sources; admins can read all.
 
-The pool does not treat every source as equally healthy. Three mechanisms
-cooperate:
+Other downstream routes:
 
-- **Source circuits.** Each source has a durable circuit. Attributed probe
-  failures (transport/TLS/auth; never judge or budget failures) accumulate per
-  source. At `source_failure_threshold` (default 3) the source opens for
-  `source_cooldown_base_ms` (default 30s); each failed post-cooldown trial
-  doubles the backoff up to `source_cooldown_max_ms` (default 15min). A pass
-  closes and resets the circuit. Candidate selection excludes cooling
-  sources, ranks expired-cooldown sources last (half-open trials), and then
-  prefers recently passing resources, so acquire switches sources without
-  operator intervention. When every eligible source is cooling, the shortfall
-  says so instead of pretending the inventory is empty.
-- **Demand refill.** When an acquire request finds no candidates and an
-  eligible `provider_api` source exists, the pool performs one demand fetch
-  (single-flight, per-source cadence guard) and re-selects. An empty local
-  inventory is not a hard failure if the vendor can supply fresh proxies.
-- **Prewarm.** `POST /v1/prewarm` with `{"count":N,"deadline_ms":120000}`
-  starts one asynchronous fill job. It probes inventory, preferring recently
-  passing then untested resources, records evidence/health, retires repeatedly dead
-  supply, and stops at the target, the deadline, or
-  `prewarm_max_attempts`. Progress is available at `GET /v1/admin/prewarm`
-  and in the console. Prewarm refreshes evidence but never authorizes
-  delivery: each acquire still performs its own request-owned validation.
+- `POST /api/v1/prewarm` creates a durable prewarm job (HTTP 202). Its `count`
+  target uses the same `max_count_per_request` safety ceiling as acquire.
+- `GET /api/v1/jobs/{id}` and `POST /api/v1/jobs/{id}/cancel` are scoped to the
+  owning project.
+- `POST /api/v1/leases/{id}/release` and `/feedback` require the key that owns
+  the lease. Another key in the same project gets 404.
+- `DELETE /api/v1/sessions/{id}` releases a sticky binding without clearing
+  its already-effective project CD.
 
-## Exit IP and Region
+## Admin API and Console
 
-Every passing probe already knows the exit IP from the signed judge. If
-`geoip_db_path` points at an offline MaxMind-format database (GeoLite2 City
-or DB-IP Lite City), the pool resolves country/region/city locally and stores
-the latest observation per resource. No third-party lookup is made during
-probing, so there is no per-IP rate limit and no unsigned response to trust.
+`GET /admin` serves the embedded console; it has no external asset dependency.
+The admin session is an HttpOnly, SameSite=Strict cookie, while the master API
+token can also authenticate directly. Cookie mutations require the
+`X-PP-Admin: 1` header. An explicitly empty or invalid `Authorization` header
+never falls back to an admin cookie.
 
-Acquire responses include `observed: {exit_ip, country_code, country, region,
-city, observed_at}` when available, and requests may filter with
-`"filters": {"countries": ["CN"]}`. Download DB-IP Lite (no account) or
-GeoLite2 and set `geoip_db_path`; an empty path disables geo enrichment while
-still recording exit IPs.
+The console separates channels, inventory/static cache, jobs, projects,
+sessions, usage, and system status. The source create form emits the typed
+nested config the API requires:
 
-## Downstream Keys and Channel Cooldown
+- provider: `{"provider":{"protocol":"http","fetch_count":20}}`
+- catalogue site: `{"site":{"site_id":"ip89","max_pages":1}}`
+- generic static URL: `{"static":{"url":"https://example.com/list.txt","default_transport":"http"}}`
+- upload channel: `{}` plus upload through its import endpoint
 
-The console and management API are protected by `admin_password` (when set;
-otherwise the legacy `api_token` is accepted). The master `api_token` remains
-valid for admin API calls — never hand it to downstream consumers. Downstream
-consumers should use dedicated keys:
+Flat legacy provider/site fields are deliberately rejected. Source updates
+use optimistic `config_version`; the explicit delete endpoint directly removes
+the source and its inventory. Saving a source never starts a fetch or probe.
 
-```sh
-# Admin creates a key; the plaintext token is returned exactly once.
-curl -X POST http://127.0.0.1:8080/v1/admin/keys \
-  -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -d '{"name":"business-a","default_cd_seconds":300}'
+Project source scope is tri-state. `null` restores unrestricted access, `[]`
+is an empty allowlist, and a non-empty array is an explicit allowlist. Project
+updates use `config_version` compare-and-swap.
 
-# Downstream acquire with a per-request CD of 300 seconds.
-curl -X POST "http://127.0.0.1:8080/v1/proxies/acquire?cd=300" \
-  -H "X-API-Key: pk_..." \
-  -d '{"count":2}'
-```
+Main admin routes include:
 
-Keys are accepted through `Authorization: Bearer`, `X-API-Key`, or the `key`
-query parameter, and may only call acquire, release, and feedback — source
-management, key management, prewarm, and admin endpoints require the master
-token or a console session. Only an HMAC hash and a display prefix are stored;
-the token cannot be recovered after creation. `GET/PATCH/DELETE
-/v1/admin/keys` list, enable/disable, and delete keys.
+- `GET/POST /api/v1/admin/projects` and
+  `GET/PATCH/DELETE /api/v1/admin/projects/{id}`
+- `GET/POST /api/v1/admin/projects/{id}/keys`
+- `GET/PUT /api/v1/admin/projects/{id}/sources`
+- `GET/POST /api/v1/admin/sources`, `GET/PATCH/DELETE /api/v1/admin/sources/{id}`
+- `POST /api/v1/admin/sources/{id}/imports`, `/fetch`, `/validate`
+- `GET /api/v1/admin/adapters`, `/sites`, `/jobs`, `/sessions`, `/stats`,
+  `/validation`, `/daily`, `/system`
+- `GET/PUT /api/v1/admin/settings`; `POST /api/v1/admin/settings/bark/test`
+- `GET /api/v1/admin/usage`; `POST /api/v1/admin/usage/refresh`
 
-`cd` is in seconds. The effective window is the request's `cd` when present,
-otherwise the key's `default_cd_seconds`; zero disables the channel cooldown.
-It is tracked per `(key, proxy)` and starts only after a successful delivery,
-so failed acquire attempts do not burn the window. The same key will not
-receive that proxy again until the window expires; different keys are
-independent. This applies equally to provider-API and custom inventory because
-the filter is part of candidate selection.
+The admin import endpoint and the upload-key import endpoint share the same
+durable importer and persistent inventory. Both accept `text/plain` URI lines
+or an `application/json` `items` batch. Limits are 8 MiB per body, 10,000 items
+per batch, and 256 bytes per username or password. A batch reports `added`,
+`updated`, `duplicate`, `rejected`, and at most 100 sanitized row errors while
+the rejected count remains complete. Batch results and idempotency records are
+retained for 7 days. See the
+[Importer contract](docs/source-contract.md#55-importer-contract) for the exact
+wire format and authorization rules.
 
-### Why no Redis
+`GET /api/v1/admin/system` reports the executable version/limits and identifies
+the default project. A master-token or admin-session prewarm job is therefore
+explicitly shown as belonging to `default`, not to an arbitrary other project.
 
-The deployment is a single Go process with one SQLite database in WAL mode.
-Lease fencing, reservations, source circuits, and per-key cooldowns all need
-the same transactional authority; SQLite provides that with immediate
-transactions and durable state, without another service to operate, secure,
-and back up on a 1 GiB instance. Redis would only become necessary when
-multiple application instances must share in-flight state or when sustained
-QPS exceeds a single SQLite writer. At that point the right shape is a
-transactional database (PostgreSQL) as the source of truth with Redis as a
-cache/rate-limit layer — not Redis alone holding leases and cooldowns.
+## Channel Types
 
-## Judge Endpoint
+The code-owned adapter registry contains:
 
-`GET /v1/judge?nonce=<hex>` is the built-in owned judge: it echoes the nonce,
-reports the exit IP taken from the actual TCP peer (never forwarded headers),
-and signs the answer with `judge_secret` (HMAC-SHA256 over `nonce|exit_ip`).
-Point `judge_url` at this endpoint's public address. A plain-HTTP judge outside
-loopback requires the secret, and probes refuse unverifiable answers as
-suspected interception. Expose the port directly — a reverse proxy would
-replace the true peer address. The endpoint is rate limited per source IP.
+- `custom`: persistent inventory shared by the admin uploader and upload-key
+  API pushes. The durable Importer accepts `lines_v1` text and structured
+  `application/json` batches; both are additive and duplicates do not reset
+  health or CD. Periodic validation and manual validation are separate
+  operations.
+- `provider_api`: the SCDN on-demand API. Candidates are fetched during a
+  request and never placed in public inventory.
+- `site_fetch`: one catalogued public-list site with a code-owned parser.
+- `static_url`: a generic bounded HTTP(S) static list.
 
-Behind a trusted gateway (for example Traefik in front of the container with
-the public domain), set `judge_trust_forwarded: true` and `judge_url` to the
-gateway's HTTPS address: the judge then takes the exit IP from the rightmost
-`X-Forwarded-For` entry (the one your gateway appended), ignoring anything the
-proxied client spoofed ahead of it. TLS comes from the gateway's certificate,
-so no `judge_ca_pem` is needed.
+Fetches are bounded and single-flight per source. Static cache TTL and memory
+limits come from `static_cache_ttl_ms`, `static_cache_max_entries`, and
+`static_cache_max_bytes`; they are wired into the running ingest service at
+startup. API and static channel configuration is nested and typed; no old flat
+adapter payload is accepted.
 
-## Traffic Budget
+## Validation, Health, and Jobs
 
-The instance's 1024 GB monthly traffic package is not a constraint for this
-service: it distributes proxy resources and does not relay clients' business
-traffic — downstream users connect directly to the proxies they receive.
+Default validation is a signed exit-IP judge probe. Optional target TLS mode
+tunnels through the candidate proxy, verifies the target certificate, and then
+closes without sending business HTTP bytes. DNS/address policy is applied to
+both targets and actual dial destinations.
 
-| Traffic | Direction | Size |
-| --- | --- | --- |
-| Uploading a 10k-line txt | inbound | ~0.6 MB (inbound is free on Flexus) |
-| Acquire response | outbound | a few hundred bytes |
-| Probe via HTTP signed judge | outbound | ~0.6 KB (CONNECT + request + judge response) |
-| Probe via TLS judge | outbound | ~1-1.5 KB (the certificate handshake dominates) |
-| Dead-proxy probe | outbound | tens of bytes (SYN/RST only) |
+Source circuits distinguish vendor/API health from proxy quality. Temporary
+errors back off; they do not become permanent deletion by count alone.
+Explicit proxy authentication failure is the main immediate-delete case.
+Country eligibility uses observed exit data; an unobserved candidate may be
+probed rather than rejected solely for lacking a country label.
 
-A nightly full pass over 10,000 proxies with roughly 30% alive costs about
-2 MB per night with the HTTP judge (~60 MB/month) and about 4 MB with a TLS
-judge. Even the worst case of 10,000 alive probes over TLS is ~10 MB per night
-(~300 MB/month) — under 1% of the package. Probing more often would scale this
-linearly; the default is once per night.
+Prewarm jobs are durable and project-scoped. Ready means currently eligible
+under the job's evidence window, source/project authorization, filters, and
+project CD. It is not a cumulative success count and does not write CD.
+Jobs support cancellation, terminal states, and interrupted recovery on
+restart. Static-list caches provide bounded public acquisition supply without
+persistent inventory rows; API candidate batches remain request-local and
+never become public stock.
 
-The real traffic risks are relaying business traffic through this machine
-(not part of this design) and public abuse of `/v1/judge` or `/admin`. The
-judge endpoint is rate limited to 600 requests/min per source IP with ~200-byte
-responses, so a single IP pinned at the limit around the clock adds at most
-~5 GB/month; front the port with a security group and set a cloud outbound
-traffic alarm (for example, 2 GB/day) to catch anomalies early.
+## Usage Alerts and Bark
 
-## Recommended First Implementation
+Usage accounting has its own SQLite tables on the same database. Secrets are
+encrypted with `secret_encryption_key` and never returned in plaintext. An
+explicit admin clear is persisted as a sentinel, so a restart cannot silently
+resurrect a cleared bootstrap credential or region.
 
-- One Go process using `net/http`, `database/sql`, and bounded goroutines.
-- Local SQLite in WAL mode as inventory, reservation, lease, and budget authority.
-- No Redis, PostgreSQL, ORM, web framework, or external task queue by default.
-- Four deployment-wide probe slots, two per request, and small bounded batches.
-- The built-in signed judge endpoint and an explicit proxy-transport layer.
-- First integrations: manual `lines_v1` import; one actual provider API later.
+The production Huawei traffic reader is intentionally unavailable until the
+official Flexus L billing/measurement API, permissions, accounting period, and
+units are verified. The console must show that absence; it must not fabricate
+zero usage or claim official billing data.
 
-Do not begin with microservices, periodic full-pool validation, or a universal
-parser that tries to infer arbitrary provider formats. PostgreSQL and optional
-Redis are later scale-out choices, not dependencies of the single-machine build.
+Usage thresholds only notify. They never stop acquisition, fetching, probing,
+or prewarm. Failed daily reads keep the last valid snapshot marked stale. The
+scheduler uses a persisted bounded retry backoff, so an already-passed daily
+slot cannot become a reader/log/SQLite hot loop; a restart honors that backoff.
+Notification outbox rows are deduplicated and use an atomic persistent claim
+plus a bounded number of real send attempts. SKIPPED checks (Bark disabled or
+unconfigured) do not consume that budget. Bark URLs reject credentials/query
+fragments, use HTTPS outside genuine loopback IPs, pin policy-checked DNS
+results, and never include the device key in errors.
 
-## Implementation Status
+## Security Boundaries
 
-Implemented and covered by tests:
+- Admin/master credentials are separate from downstream project keys. Secrets
+  are masked on read; plaintext key tokens are shown once at creation.
+- Upload keys (`uk_…`) are a third credential kind: source-scoped import and
+  batch-result read access only. They are stored HMAC-hashed, never grant
+  acquisition or admin rights, and cannot read project credentials.
+- Management endpoints require admin/master identity. Downstream keys can only
+  use the delivery surface, and job/session/lease ownership is enforced.
+- Source downloads, the judge, target TLS, and Bark use bounded transport
+  policies. Private/loopback/link-local/CGNAT/metadata addresses, DNS
+  rebinding, redirects, environment proxies, body sizes, and decompression are
+  handled explicitly.
+- The judge is exposed at `/v1/judge`; it is an internal oracle path, not part
+  of the downstream API contract.
+- SQLite uses WAL, full synchronous mode, a bounded connection count, and an
+  external singleton lock. Back up the database together with WAL, config, and
+  the secret-encryption material.
 
-- SQLite storage (WAL, fenced reservations, leases, scoped health, cooldowns,
-  tombstones, sweeps) under `internal/storage/sqlite/`.
-- `https_basic_v1` validation over a fresh proxy connection with verified TLS
-  and nonce-checked judge responses under `internal/validation/`.
-- The acquire flow (select, reserve, probe, commit, dispatch guard, partial
-  results) under `internal/application/acquire.go`.
-- `lines_v1` custom import with address policy and HMAC-based canonical
-  identity under `internal/integrations/custom/` and `internal/domain/`.
-- The first provider API channel (`provider_api` / `json_mapping_v1`) for
-  proxy.scdn.io under `internal/integrations/scdn/`: additive fetch imports
-  via `POST /v1/sources/{id}/fetch`, declared protocol-to-transport mapping,
-  bounded payloads, per-source fetch single-flight and cadence guard, and
-  maintenance-driven retirement of dead provider supply.
-- Durable source circuits with exponential cooldown, automatic source
-  switching, and demand refill of eligible provider channels during acquire
-  (`internal/storage/sqlite/scheduling.go`, `internal/application/acquire.go`).
-- Target-count prewarming via `POST /v1/prewarm` with live status at
-  `GET /v1/admin/prewarm` and in the console
-  (`internal/application/prewarm.go`).
-- Signed exit-IP observations plus optional offline geo lookup
-  (`internal/geoip/`), returned in acquire responses and filterable by
-  country.
-- Separate admin password, hashed downstream API keys with per-key default CD,
-  and per-`(key, proxy)` delivery cooldowns enforced during candidate
-  selection (`internal/api/auth.go`, `internal/application/keys.go`,
-  `internal/storage/sqlite/keys.go`).
-- Self-upload additive semantics: each line keeps a stable content-derived
-  record ID, re-uploads update offers in place, and dead supply is cleaned up
-  by validation instead of list replacement. HTTP and SOCKS5 lines are
-  supported (`http://` / `socks5://`, bare lines use the source's default).
-- Nightly full validation for custom sources (`custom_nightly_validation_time`,
-  default 03:00): authentication failures (e.g. proxy `407`, SOCKS5 auth
-  rejection) retire the resource immediately; other attributed failures apply
-  cooldowns and remove the resource (tombstoned so re-uploads cannot revive
-  it) once the consecutive-failure threshold
-  (`custom_nightly_retire_failures`, default 2) is reached. Evidence never
-  authorizes delivery.
-- Embedded admin console at `/admin` with session login, `/v1/admin/sources`
-  overview, `/v1/admin/daily` per-source success rates, and manual per-source
-  validation via `POST /v1/sources/{id}/validate` with live progress at
-  `GET /v1/admin/validation`. Channels can be removed with
-  `DELETE /v1/sources/{id}`, which drops their offers and tombstones so a
-  later re-upload rebuilds the pool from scratch.
-- Authenticated HTTP API (`acquire`, `release`, `feedback`, `sources`,
-  `imports`, `stats`) under `internal/api/`.
-- In-process maintenance sweeps, singleton lock, and graceful shutdown.
-- Built-in signed judge endpoint `/v1/judge` with per-IP rate limiting; probes
-  verify nonce and HMAC, treating unverifiable answers as interception.
-
-Not implemented yet (later milestones): additional provider API formats,
-idempotency-key replay, sticky/rotating gateway semantics, SOCKS transports,
-feedback trust weighting, capacity groups, and the PostgreSQL/Redis scale-out
-path.
-
-## Build and Run
+## Build, Test, and Run
 
 ```sh
 go test ./...
+go vet ./...
+go test -race ./...
 go build -o proxy-pool ./cmd/proxy-pool
-cp config.example.json config.json   # then edit secrets and judge_url
+cp -n config.example.json config.json
 ./proxy-pool -config config.json
 ```
 
-Container build (the CGO toolchain is provided by the builder stage):
+`config.example.json` binds `127.0.0.1:8080` for a native local run. The
+container command below cannot reach that loopback listener from the host, so
+the container deployment must set `listen_addr` to `0.0.0.0:8080` in its own
+config and rely on a host firewall or TLS reverse proxy.
+
+The signed `/v1/judge` endpoint must be reachable by the remote candidate
+proxies, so `judge_url` cannot be a localhost address for real remote proxy
+validation. Publish only that judge route: use verified HTTPS, or signed plain
+HTTP outside loopback with a strong random `judge_secret`. If a trusted
+reverse proxy supplies the peer address, set `judge_trust_forwarded` only when
+the backend is reachable exclusively through that gateway and the gateway
+strips client-supplied `CF-Connecting-IP`/`X-Forwarded-For` before setting
+the observed peer. The local reverse proxy must also remove any incoming
+`CF-Connecting-IP` header and overwrite `X-Forwarded-For` with the peer it
+actually observed. `trusted_proxy_cidrs` does not enforce Judge header trust.
+Otherwise leave `judge_trust_forwarded` false and use the direct peer. Keep the
+admin console and management API on loopback, a private network, or TLS with
+strong admin authentication; they must not be publicly reachable without
+protection.
+
+The process creates the parent directories for both `lock_path` and
+`database_path` before opening the lock or database. A fresh configuration
+therefore starts without a pre-created `data/` directory. On startup, the
+central allocator schema is migrated first, then `usage.New` creates/updates
+only its own usage tables.
+
+### CI Release Artifact
+
+The `docker` workflow runs formatting, `go vet`, the full normal test suite,
+and the race suite before publishing either image or native artifacts. Its
+`native-linux-amd64` job produces a statically linked amd64 Go executable with
+the SQLite driver included. The Actions artifact is named
+`proxy-pool-linux-amd64` and is retained for 14 days; a `v*` tag push also
+attaches the same tarball and `.sha256` file to that GitHub release.
+
+The immutable GitHub Actions run ID and commit are the source of truth, not a
+filename. Download the artifact, verify its checksum, and inspect the binary:
+
+```sh
+sha256sum -c proxy-pool-<version>-linux-amd64.tar.gz.sha256
+tar -xzf proxy-pool-<version>-linux-amd64.tar.gz
+cd proxy-pool-<version>-linux-amd64
+sha256sum -c SHA256SUMS
+file proxy-pool
+./proxy-pool -version
+```
+
+The tarball contains `proxy-pool`, `VERSION`, `REVISION`, and `SHA256SUMS`.
+`file` must report an ELF 64-bit x86-64 executable with no dynamic
+interpreter; this is the artifact validated by CI. Because this driver is
+CGO-backed, the CI path builds the Dockerfile's Alpine/musl `release` stage,
+which uses the same static-link checks as the image. Only Linux amd64 is
+published; no aarch64 or 32-bit artifact is claimed.
+
+Container build:
 
 ```sh
 docker build -t proxy-pool .
-docker run -p 8080:8080 -v "$PWD/config.json:/var/lib/proxy-pool/config.json:ro" \
+sudo install -d -o root -g root -m 0755 /etc/proxy-pool
+sudo install -o 10001 -g 10001 -m 0440 \
+  /absolute/path/to/config.json /etc/proxy-pool/container-config.json
+docker run --rm -p 127.0.0.1:8080:8080 \
+  -v /etc/proxy-pool/container-config.json:/var/lib/proxy-pool/config.json:ro \
   -v proxy-pool-data:/var/lib/proxy-pool/data proxy-pool
 ```
+
+The mounted config must be readable by container UID/GID `10001`; the example
+keeps a separate `0440` copy instead of changing the protected host config or
+making it world-readable. The image creates and owns
+`/var/lib/proxy-pool/data`, so a fresh named volume starts writable by `app`.
+Publishing the container only on host loopback still requires a public TLS
+reverse proxy or load balancer for `/v1/judge`; keep the admin routes on the
+private side of that proxy.
+
+The image is Linux amd64 and its Dockerfile asserts the embedded version and
+revision. For the 2 CPU / 1 GiB Flexus profile, the native binary under systemd
+is the lower-overhead option; Docker is optional. See
+[Low-Memory Go Deployment Profile](docs/deployment-go-lite.md) for the install,
+backup, upgrade, and rollback procedure.
+
+A successful image or artifact build alone is not acceptance: migration,
+fresh-database startup, admin login, acquire/prewarm/session behavior, and
+per-channel reports still need explicit verification on the target host.
+
+## Acceptance Status
+
+Local final-source acceptance passes all 97 root audits under both the full
+normal and race suites, and `go vet ./...` passes. Release acceptance is still
+incomplete. Remaining external gates include the official Huawei usage reader
+verification, per-channel live acquisition/probe reports, target host
+architecture/resource verification, public Judge reachability, and TLS/admin
+security checks. The user has separately authorized a deployment to Huawei
+Flexus L, but the target SSH host, OS/libc/CPU details, and existing service
+topology are not yet known. This repository has not performed that deployment,
+and no CI workflow holds production SSH credentials or mutates a target host.

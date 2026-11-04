@@ -57,7 +57,7 @@ func (k *keyAPI) do(t *testing.T, method, path, token, body string) (int, []byte
 
 func (k *keyAPI) createKey(t *testing.T, name string, defaultCD int64) string {
 	t.Helper()
-	code, data := k.do(t, http.MethodPost, "/v1/admin/keys", k.token,
+	code, data := k.do(t, http.MethodPost, "/api/v1/admin/keys", k.token,
 		fmt.Sprintf(`{"name":%q,"default_cd_seconds":%d}`, name, defaultCD))
 	if code != http.StatusCreated {
 		t.Fatalf("create key status=%d body=%s", code, data)
@@ -92,12 +92,12 @@ func TestAPIKeyManagementAndAuth(t *testing.T) {
 
 	token := k.createKey(t, "biz-a", 300)
 	// A downstream key cannot manage keys or sources.
-	code, data := k.do(t, http.MethodGet, "/v1/admin/keys", token, "")
+	code, data := k.do(t, http.MethodGet, "/api/v1/admin/keys", token, "")
 	if code != http.StatusForbidden {
 		t.Fatalf("downstream key admin access status=%d body=%s", code, data)
 	}
 	// The key works for the delivery surface.
-	req, _ := http.NewRequest(http.MethodPost, k.srv.URL+"/v1/proxies/acquire",
+	req, _ := http.NewRequest(http.MethodPost, k.srv.URL+"/api/v1/proxies/acquire",
 		strings.NewReader(`{"count":1}`))
 	req.Header.Set("X-API-Key", token)
 	req.Header.Set("Content-Type", "application/json")
@@ -112,15 +112,15 @@ func TestAPIKeyManagementAndAuth(t *testing.T) {
 
 	// Disabling the key invalidates it immediately.
 	var keys []domain.APIKey
-	code, data = k.do(t, http.MethodGet, "/v1/admin/keys", k.token, "")
+	code, data = k.do(t, http.MethodGet, "/api/v1/admin/keys", k.token, "")
 	if code != http.StatusOK || json.Unmarshal(data, &keys) != nil || len(keys) != 1 {
 		t.Fatalf("list keys: %d %s", code, data)
 	}
-	code, data = k.do(t, http.MethodPatch, "/v1/admin/keys/"+keys[0].ID, k.token, `{"enabled":false}`)
+	code, data = k.do(t, http.MethodPatch, "/api/v1/admin/keys/"+keys[0].ID, k.token, `{"enabled":false}`)
 	if code != http.StatusOK {
 		t.Fatalf("disable key: %d %s", code, data)
 	}
-	req, _ = http.NewRequest(http.MethodPost, k.srv.URL+"/v1/proxies/acquire",
+	req, _ = http.NewRequest(http.MethodPost, k.srv.URL+"/api/v1/proxies/acquire",
 		strings.NewReader(`{"count":1}`))
 	req.Header.Set("X-API-Key", token)
 	req.Header.Set("Content-Type", "application/json")
@@ -150,93 +150,63 @@ func TestConsumerCooldownIsolationAndDefault(t *testing.T) {
 	}
 	k := newKeyAPI(t, e)
 	defer k.srv.Close()
-	keyA := k.createKey(t, "biz-a", 300)
-	keyB := k.createKey(t, "biz-b", 0)
-
-	acquire := func(key string, query string) (int, []byte) {
-		req, _ := http.NewRequest(http.MethodPost,
-			k.srv.URL+"/v1/proxies/acquire"+query, strings.NewReader(`{"count":1}`))
-		req.Header.Set("X-API-Key", key)
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("acquire: %v", err)
-		}
-		data, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		return resp.StatusCode, data
-	}
-	release := func(key, leaseID string) {
-		code, data := k.do(t, http.MethodPost, "/v1/leases/"+leaseID+"/release", key, "")
-		if code != http.StatusOK {
-			t.Fatalf("release: %d %s", code, data)
-		}
-	}
-	parse := func(data []byte) (leaseID, resourceID string) {
-		var out struct {
-			Items []struct {
-				LeaseID    string `json:"lease_id"`
-				ResourceID string `json:"resource_id"`
-			} `json:"items"`
-		}
-		if err := json.Unmarshal(data, &out); err != nil || len(out.Items) != 1 {
-			t.Fatalf("acquire response: %s (%v)", data, err)
-		}
-		return out.Items[0].LeaseID, out.Items[0].ResourceID
-	}
-
-	// Key A's default CD is 300s: two deliveries must be different proxies.
-	code, data := acquire(keyA, "")
-	if code != http.StatusOK {
-		t.Fatalf("A first acquire: %d %s", code, data)
-	}
-	lease1, resource1 := parse(data)
-	release(keyA, lease1)
-	code, data = acquire(keyA, "")
-	if code != http.StatusOK {
-		t.Fatalf("A second acquire: %d %s", code, data)
-	}
-	lease2, resource2 := parse(data)
-	if resource2 == resource1 {
-		t.Fatalf("same proxy repeated inside default CD: %s", data)
-	}
-	release(keyA, lease2)
-	// Third delivery has no eligible proxy left for A.
-	code, data = acquire(keyA, "")
-	if code == http.StatusOK {
-		t.Fatalf("A third acquire should be blocked by CD: %s", data)
-	}
-	// Explicit cd=0 overrides the key default and disables the window.
-	code, data = acquire(keyA, "?cd=0")
-	if code != http.StatusOK {
-		t.Fatalf("A explicit cd=0 should disable CD: %d %s", code, data)
-	}
-	lease3, _ := parse(data)
-	release(keyA, lease3)
-
-	// Key B is a different channel and can still receive proxy 1.
-	code, data = acquire(keyB, "?cd=300")
-	if code != http.StatusOK {
-		t.Fatalf("B acquire with explicit cd: %d %s", code, data)
-	}
-	lease4, _ := parse(data)
-	release(keyB, lease4)
-
-	// Query-string key authentication also works.
-	req, _ := http.NewRequest(http.MethodPost,
-		k.srv.URL+"/v1/proxies/acquire?cd=0&key="+keyB, strings.NewReader(`{"count":1}`))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	keyA, _, err := e.keys.Create(context.Background(), "biz-a", 300*time.Second)
 	if err != nil {
-		t.Fatalf("query-key acquire: %v", err)
+		t.Fatal(err)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("query-key acquire status=%d", resp.StatusCode)
+	keyB, _, err := e.keys.Create(context.Background(), "biz-b", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	acquire := func(key domain.APIKey, cdSeconds *int64) application.AcquireResult {
+		t.Helper()
+		result, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{
+			Count: 1, ConsumerID: key.ID, CDSeconds: cdSeconds,
+		})
+		if derr != nil {
+			t.Fatalf("acquire: %v", derr)
+		}
+		return result
+	}
+	release := func(key domain.APIKey, leaseID string) {
+		if ok, derr := e.leases.Release(context.Background(), leaseID, key.ID, false); derr != nil || !ok {
+			t.Fatalf("release: ok=%v err=%v", ok, derr)
+		}
+	}
+
+	// Project CD is the CD subject: both keys share the default project's
+	// fixed windows, and the current request's cd cannot shorten them.
+	first := acquire(keyA, nil)
+	if first.Delivered != 1 {
+		t.Fatalf("A first acquire: %s", first.ShortfallReason)
+	}
+	release(keyA, first.Items[0].LeaseID)
+	second := acquire(keyA, nil)
+	if second.Delivered != 1 {
+		t.Fatalf("A second acquire: %s", second.ShortfallReason)
+	}
+	if second.Items[0].ResourceID == first.Items[0].ResourceID {
+		t.Fatal("same proxy repeated inside default CD")
+	}
+	release(keyA, second.Items[0].LeaseID)
+	// Both proxies are inside the project window now: further requests are
+	// explained business results, and cd=0 cannot shorten the live windows.
+	noCD, zeroCD := (*int64)(nil), int64(0)
+	for _, cd := range []*int64{noCD, &zeroCD} {
+		result := acquire(keyA, cd)
+		if result.Delivered != 0 || result.ShortfallReason == "" {
+			t.Fatalf("blocked acquire must be an explained zero delivery: %+v", result)
+		}
+	}
+	// Key B is another credential in the same project: it cannot bypass the
+	// project's fixed CD either.
+	if blocked := acquire(keyB, nil); blocked.Delivered != 0 {
+		t.Fatalf("B must not bypass project CD: %+v", blocked)
 	}
 }
 
-func TestConsumerCooldownWindow(t *testing.T) {
+func TestProjectCooldownWindow(t *testing.T) {
 	j := startJudge(t)
 	e := newEnv(t, j, nil)
 	e.importProxy(t, "manual", "http://127.0.0.1:1")
@@ -247,23 +217,20 @@ func TestConsumerCooldownWindow(t *testing.T) {
 	if err != nil || len(cands) != 1 {
 		t.Fatalf("select: %v %+v", err, cands)
 	}
+	fp := e.acquire.FingerprintOf(cands[0].Resource.Conn)
 	now := time.Now()
-	if err := e.store.RecordConsumerDeliveries(ctx, "c1", []string{cands[0].Resource.ID}, now.Add(-5*time.Second)); err != nil {
+	if err := e.store.RecordProjectDeliveries(ctx, "proj-cd", 10*time.Second,
+		now.Add(-5*time.Second), []string{fp}); err != nil {
 		t.Fatalf("record delivery: %v", err)
 	}
-	inWindow, err := e.store.SelectCandidates(ctx, sqlite.SelectionFilters{
-		Profile: "https_basic_v1", Now: now, UsefulCutoff: now,
-		ConsumerID: "c1", ConsumerCooldown: 10 * time.Second, Limit: 1,
-	})
-	if err != nil || len(inWindow) != 0 {
-		t.Fatalf("inside CD window: %v %+v", err, inWindow)
+	blocked, err := e.store.ProjectCooldownBlocked(ctx, "proj-cd", now, []string{fp})
+	if err != nil || len(blocked) != 1 {
+		t.Fatalf("inside CD window must block: %v %+v", err, blocked)
 	}
-	outside, err := e.store.SelectCandidates(ctx, sqlite.SelectionFilters{
-		Profile: "https_basic_v1", Now: now, UsefulCutoff: now,
-		ConsumerID: "c1", ConsumerCooldown: 4 * time.Second, Limit: 1,
-	})
-	if err != nil || len(outside) != 1 {
-		t.Fatalf("outside CD window: %v %+v", err, outside)
+	blocked, err = e.store.ProjectCooldownBlocked(ctx, "proj-cd",
+		now.Add(6*time.Second), []string{fp})
+	if err != nil || len(blocked) != 0 {
+		t.Fatalf("outside CD window must release: %v %+v", err, blocked)
 	}
 }
 
@@ -284,33 +251,37 @@ func TestConsumerCooldownConcurrentSingleWinner(t *testing.T) {
 	key := k.createKey(t, "biz-a", 300)
 
 	var wg sync.WaitGroup
-	results := make(chan int, 2)
+	results := make(chan string, 2)
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			req, _ := http.NewRequest(http.MethodPost,
-				k.srv.URL+"/v1/proxies/acquire?cd=300", strings.NewReader(`{"count":1}`))
+				k.srv.URL+"/api/v1/proxies/acquire?cd=300", strings.NewReader(`{"count":1}`))
 			req.Header.Set("X-API-Key", key)
 			req.Header.Set("Content-Type", "application/json")
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
-				results <- 0
+				results <- err.Error()
 				return
 			}
-			results <- resp.StatusCode
+			data, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
 			resp.Body.Close()
+			results <- string(data)
 		}()
 	}
 	wg.Wait()
 	close(results)
-	okCount := 0
-	for code := range results {
-		if code == http.StatusOK {
-			okCount++
+	delivered := 0
+	for body := range results {
+		var result application.AcquireResult
+		if json.Unmarshal([]byte(body), &result) == nil {
+			delivered += result.Delivered
 		}
 	}
-	if okCount != 1 {
-		t.Fatalf("concurrent same-key acquires succeeded %d times, want exactly 1", okCount)
+	// Zero deliveries are explained business results (HTTP 200) now; the
+	// invariant is that exactly one connection is delivered in total.
+	if delivered != 1 {
+		t.Fatalf("concurrent same-project acquires delivered %d connections, want exactly 1", delivered)
 	}
 }

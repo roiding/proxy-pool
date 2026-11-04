@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,60 +62,28 @@ func (s *Server) handleSourceValidate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "started", "source_id": id})
 }
 
-func (s *Server) handleDeleteSource(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	revoked, err := s.store.DeleteSource(r.Context(), id, time.Now())
-	if err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "deleted", "source_id": id, "removed_offers": revoked})
-}
-
 func (s *Server) handleValidationStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.nightly.Status())
 }
 
-func (s *Server) handlePrewarm(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 8192)
-	var req application.PrewarmRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, domain.InvalidRequest("invalid JSON body: %v", err))
-		return
-	}
-	started, derr := s.prewarm.Start(req)
-	if derr != nil {
-		writeError(w, derr)
-		return
-	}
-	if !started {
-		writeError(w, domain.E("PREWARM_IN_PROGRESS", 409, "another prewarm run is already active"))
-		return
-	}
-	status := s.prewarm.Status()
-	writeJSON(w, http.StatusAccepted, map[string]any{
-		"status": "started", "target": status.Target, "started_at": status.StartedAt,
-	})
-}
-
-func (s *Server) handlePrewarmStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.prewarm.Status())
-}
-
-const (
-	sessionCookie = "pp_admin"
-	sessionTTL    = 12 * time.Hour
-)
+const sessionCookie = "pp_admin"
 
 // sessions holds in-memory admin sessions. The deployment invariant is one
 // active process, so logout and restart both invalidate every session.
+// sessions holds in-memory admin sessions with a hard capacity bound. The
+// deployment invariant is one active process, so logout and restart both
+// invalidate every session.
 type sessions struct {
 	mu     sync.Mutex
 	tokens map[string]time.Time
+	limit  int
 }
 
-func newSessions() *sessions {
-	return &sessions{tokens: map[string]time.Time{}}
+func newSessions(limit int) *sessions {
+	if limit < 1 {
+		limit = 1
+	}
+	return &sessions{tokens: map[string]time.Time{}, limit: limit}
 }
 
 func (s *sessions) issue(ttl time.Duration) string {
@@ -123,9 +92,21 @@ func (s *sessions) issue(ttl time.Duration) string {
 		panic(err)
 	}
 	token := hex.EncodeToString(b)
+	now := time.Now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.tokens[token] = time.Now().Add(ttl)
+	if len(s.tokens) >= s.limit {
+		// Evict the soonest-expiring session so the newest login wins.
+		oldest := ""
+		var oldestExpiry time.Time
+		for t, exp := range s.tokens {
+			if oldest == "" || exp.Before(oldestExpiry) {
+				oldest, oldestExpiry = t, exp
+			}
+		}
+		delete(s.tokens, oldest)
+	}
+	s.tokens[token] = now.Add(ttl)
 	return token
 }
 
@@ -150,7 +131,7 @@ func (s *sessions) revoke(token string) {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	client := clientHost(r)
+	client := s.clientHost(r)
 	now := time.Now()
 	if s.logins.blocked(client, now) {
 		writeError(w, domain.E("LOGIN_RATE_LIMITED", 429,
@@ -177,20 +158,62 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.logins.clear(client)
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
-		Value:    s.sessions.issue(sessionTTL),
+		Value:    s.sessions.issue(s.cfg.AdminSessionTTL()),
 		Path:     "/",
-		Expires:  time.Now().Add(sessionTTL),
+		Expires:  time.Now().Add(s.cfg.AdminSessionTTL()),
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
-		Secure:   r.TLS != nil,
+		Secure:   s.secureCookie(r),
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func clientHost(r *http.Request) string {
+// secureCookie marks the session cookie Secure when the deployment is
+// explicitly public-HTTPS or the request arrives through a trusted proxy
+// that reports HTTPS. An arbitrary X-Forwarded-Proto is never trusted.
+func (s *Server) secureCookie(r *http.Request) bool {
+	if r.TLS != nil || s.cfg.PublicHTTPS {
+		return true
+	}
+	peer := s.peerHost(r)
+	for _, n := range s.cfg.TrustedProxies() {
+		if n.Contains(peer) && r.Header.Get("X-Forwarded-Proto") == "https" {
+			return true
+		}
+	}
+	return false
+}
+
+// peerHost returns the direct TCP peer, or the rightmost X-Forwarded-For
+// entry when that peer is itself a trusted proxy.
+func (s *Server) peerHost(r *http.Request) net.IP {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil
+	}
+	for _, n := range s.cfg.TrustedProxies() {
+		if n.Contains(ip) {
+			if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+				parts := strings.Split(xff, ",")
+				if last := strings.TrimSpace(parts[len(parts)-1]); last != "" {
+					if forwarded := net.ParseIP(last); forwarded != nil {
+						return forwarded
+					}
+				}
+			}
+			break
+		}
+	}
+	return ip
+}
+
+func (s *Server) clientHost(r *http.Request) string {
+	if ip := s.peerHost(r); ip != nil {
+		return ip.String()
 	}
 	return r.RemoteAddr
 }
@@ -201,7 +224,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookie, Value: "", Path: "/", MaxAge: -1,
-		HttpOnly: true, SameSite: http.SameSiteStrictMode,
+		HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: s.secureCookie(r),
 	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

@@ -1,0 +1,22 @@
+[Unit]
+Description=Proxy Pool
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=proxy-pool
+Group=proxy-pool
+ExecStart=/opt/proxy-pool/current/proxy-pool -config /etc/proxy-pool/config.json
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=30s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/proxy-pool
+
+[Install]
+WantedBy=multi-user.target

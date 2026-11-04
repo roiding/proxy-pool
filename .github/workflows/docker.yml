@@ -3,6 +3,7 @@ name: docker
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -10,7 +11,26 @@ permissions:
   packages: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -count=1 ./...
+      - name: Race
+        run: go test -race -count=1 ./...
+
   build-and-push:
+    needs: test
+    if: github.event_name != 'push' || github.ref_type != 'tag'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,5 +54,91 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.sha }}
+            VCS_REF=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  native-linux-amd64:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build static Alpine/musl amd64 binary
+        env:
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+          VCS_REF: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --platform linux/amd64 \
+            --target release \
+            --build-arg "VERSION=${VERSION}" \
+            --build-arg "VCS_REF=${VCS_REF}" \
+            --output "type=local,dest=${RUNNER_TEMP}/native-release" \
+            .
+          cp "${RUNNER_TEMP}/native-release/proxy-pool" proxy-pool-linux-amd64
+      - name: Package portable release
+        env:
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+          VCS_REF: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          file proxy-pool-linux-amd64 | tee binary-info.txt
+          if ! file proxy-pool-linux-amd64 | grep -q 'ELF 64-bit LSB executable, x86-64'; then
+            echo "unexpected native binary format" >&2
+            exit 1
+          fi
+          if file proxy-pool-linux-amd64 | grep -Eq 'dynamically linked|interpreter'; then
+            echo "native binary is not statically linked" >&2
+            exit 1
+          fi
+          chmod +x proxy-pool-linux-amd64
+          actual_version="$(./proxy-pool-linux-amd64 -version)"
+          test "$actual_version" = "${VERSION} (${VCS_REF})"
+          package_version="${VERSION//\//-}"
+          package_dir="proxy-pool-${package_version}-linux-amd64"
+          mkdir -p "dist/${package_dir}"
+          cp proxy-pool-linux-amd64 "dist/${package_dir}/proxy-pool"
+          printf '%s\n' "${VERSION}" > "dist/${package_dir}/VERSION"
+          printf '%s\n' "${VCS_REF}" > "dist/${package_dir}/REVISION"
+          (
+            cd "dist/${package_dir}"
+            sha256sum proxy-pool VERSION REVISION | sort -k2 > SHA256SUMS
+          )
+          (
+            cd dist
+            tar -czf "${package_dir}.tar.gz" "${package_dir}"
+            sha256sum "${package_dir}.tar.gz" > "${package_dir}.tar.gz.sha256"
+          )
+      - name: Upload Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: proxy-pool-linux-amd64
+          path: |
+            dist/proxy-pool-*-linux-amd64.tar.gz
+            dist/proxy-pool-*-linux-amd64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-tagged-release:
+    needs: native-linux-amd64
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: proxy-pool-linux-amd64
+          path: dist
+      - name: Publish tagged release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/proxy-pool-*-linux-amd64.tar.gz
+            dist/proxy-pool-*-linux-amd64.tar.gz.sha256

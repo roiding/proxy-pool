@@ -1,0 +1,21 @@
+{
+  "scope": "root independent real scheduled loop; local signed judge only",
+  "run_directory": "/private/tmp/proxy-pool-root-acceptance-20261103/nightly-slow-q65awgj8",
+  "scheduled_time": "14:15",
+  "version": "audit-refactor-final-20261103 (52b69c2-dirty)",
+  "in_flight_progress": {
+    "running": true,
+    "mode": "nightly",
+    "started_at": "2026-11-03T14:15:00.02928+08:00",
+    "probed": 0,
+    "retired": 0
+  },
+  "shutdown_ms": 4.003,
+  "scheduled_loop_finished_before_exit": true,
+  "integrity": "ok",
+  "request_counts": {
+    "requests": 1,
+    "nonlocal": 0
+  },
+  "status": "PASS"
+}

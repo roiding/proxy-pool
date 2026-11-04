@@ -1,0 +1,696 @@
+{
+  "metadata": {
+    "generated_at_utc": "2026-11-02T13:35:42Z",
+    "timezone": "Asia/Shanghai",
+    "acceptance_window_local": "2026-11-02T20:55:18+08:00 to 2026-11-02T21:19:22+08:00",
+    "baseline_git_head": "52b69c278f1a9668ae68cafd383b2496f5c54a7f",
+    "sitecheck_binary_sha256": "abbe98818e7c9c9c0540b2d40345bd3eff8469123432a09ab775dcb0ec4e4777",
+    "environment": {
+      "os": "Darwin 24.6.0 x86_64",
+      "go": "go1.25.1 darwin/amd64"
+    },
+    "denominator": {
+      "catalog_entries": 11,
+      "scdn_channels": 1,
+      "total_channels": 12
+    },
+    "limits": {
+      "catalog_max_pages": 1,
+      "catalog_workers_primary": 3,
+      "catalog_workers_targeted_retry": 1,
+      "per_site_timeout_seconds": 20,
+      "probes_per_channel": 2,
+      "probe_mode": "tls",
+      "probe_target": "example.com:443",
+      "probe_timeout_seconds": 4,
+      "scdn_calls": 2,
+      "scdn_count_per_call": 2,
+      "scdn_protocol": "http",
+      "target_http_business_requests": 0
+    },
+    "actual_attempts": {
+      "catalog_fetch_requests": 27,
+      "scdn_requests": 2,
+      "total_channel_requests": 29,
+      "probes_attempted": 32,
+      "probes_passed": 0,
+      "probes_failed_proxy": 32
+    },
+    "invocation_incident": "The second SCDN HTTP retry omitted -site and therefore also repeated all 11 Catalog checks. This was an extra full sweep, not an additional authorized retest. No calls followed it."
+  },
+  "primary_sweep": {
+    "sites": [
+      {
+        "site_id": "ip3366-normal",
+        "name": "云代理(普通)",
+        "fetch_ok": true,
+        "entries": 15,
+        "rejected": 0,
+        "pages_done": 1,
+        "probe": {
+          "requested": true,
+          "mode": "tls",
+          "sample": 2,
+          "attempted": 2,
+          "pass": 0,
+          "fail": 2,
+          "fail_kinds": {
+            "PROXY": 2
+          },
+          "skipped": "no candidate passed validation"
+        },
+        "verdict": "fail",
+        "millis": 100
+      },
+      {
+        "site_id": "ip89",
+        "name": "89免费代理",
+        "fetch_ok": true,
+        "entries": 2999,
+        "rejected": 1,
+        "pages_done": 1,
+        "probe": {
+          "requested": true,
+          "mode": "tls",
+          "sample": 2,
+          "attempted": 2,
+          "pass": 0,
+          "fail": 2,
+          "fail_kinds": {
+            "PROXY": 2
+          },
+          "skipped": "no candidate passed validation"
+        },
+        "verdict": "fail",
+        "millis": 1223
+      },
+      {
+        "site_id": "jiliuip-elite",
+        "name": "积流代理(高匿)",
+        "fetch_ok": true,
+        "entries": 9,
+        "rejected": 0,
+        "pages_done": 1,
+        "probe": {
+          "requested": true,
+          "mode": "tls",
+          "sample": 2,
+          "attempted": 2,
+          "pass": 0,
+          "fail": 2,
+          "fail_kinds": {
+            "PROXY": 2
+          },
+          "skipped": "no candidate passed validation"
+        },
+        "verdict": "fail",
+        "millis": 1331
+      },
+      {
+        "site_id": "lumiproxy-anon",
+        "name": "LumiProxy(普通)",
+        "fetch_ok": true,
+        "entries": 20,
+        "rejected": 6,
+        "pages_done": 1,
+        "probe": {
+          "requested": true,
+          "mode": "tls",
+          "sample": 2,
+          "attempted": 2,
+          "pass": 0,
+          "fail": 2,
+          "fail_kinds": {
+            "PROXY": 2
+          },
+          "skipped": "no candidate passed validation"
+        },
+        "verdict": "fail",
+        "millis": 5809
+      },
+      {
+        "site_id": "lumiproxy-elite",
+        "name": "LumiProxy(高匿)",
+        "fetch_ok": true,
+        "entries": 19,
+        "rejected": 7,
+        "pages_done": 1,
+        "probe": {
+          "requested": true,
+          "mode": "tls",
+          "sample": 2,
+          "attempted": 2,
+          "pass": 0,
+          "fail": 2,
+          "fail_kinds": {
+            "PROXY": 2
+          },
+          "skipped": "no candidate passed validation"
+        },
+        "verdict": "fail",
+        "millis": 1296
+      },
+      {
+        "site_id": "lumiproxy-transparent",
+        "name": "LumiProxy(透明)",
+        "fetch_ok": false,
+        "entries": 0,
+        "rejected": 0,
+        "pages_done": 0,
+        "error": "network: page 1: context deadline exceeded",
+        "probe": {
+          "requested": false,
+          "sample": 0,
+          "attempted": 0,
+          "pass": 0,
+          "fail": 0
+        },
+        "verdict": "fail",
+        "millis": 8004
+      },
+      {
+        "site_id": "openproxylist-http",
+        "name": "OpenProxyList(HTTP)",
+        "fetch_ok": true,
+        "entries": 7257,
+        "rejected": 0,
+        "pages_done": 1,
+        "probe": {
+          "requested": true,
+          "mode": "tls",
+          "sample": 2,
+          "attempted": 2,
+          "pass": 0,
+          "fail": 2,
+          "fail_kinds": {
+            "PROXY": 2
+          },
+          "skipped": "no candidate passed validation"
+        },
+        "verdict": "fail",
+        "millis": 7740
+      },
+      {
+        "site_id": "openproxylist-https",
+        "name": "OpenProxyList(HTTPS)",
+        "fetch_ok": false,
+        "entries": 0,
+        "rejected": 0,
+        "pages_done": 0,
+        "error": "network: page 1: context deadline exceeded",
+        "probe": {
+          "requested": false,
+          "sample": 0,
+          "attempted": 0,
+          "pass": 0,
+          "fail": 0
+        },
+        "verdict": "fail",
+        "millis": 8011
+      },
+      {
+        "site_id": "proxyscrape-anon",
+        "name": "ProxyScrape(普通)",
+        "fetch_ok": false,
+        "entries": 0,
+        "rejected": 0,
+        "pages_done": 0,
+        "error": "network: page 1: context deadline exceeded",
+        "probe": {
+          "requested": false,
+          "sample": 0,
+          "attempted": 0,
+          "pass": 0,
+          "fail": 0
+        },
+        "verdict": "fail",
+        "millis": 8005
+      },
+      {
+        "site_id": "proxyscrape-elite",
+        "name": "ProxyScrape(高匿)",
+        "fetch_ok": false,
+        "entries": 0,
+        "rejected": 0,
+        "pages_done": 0,
+        "error": "network: page 1: context deadline exceeded",
+        "probe": {
+          "requested": false,
+          "sample": 0,
+          "attempted": 0,
+          "pass": 0,
+          "fail": 0
+        },
+        "verdict": "fail",
+        "millis": 8005
+      },
+      {
+        "site_id": "qiyunip-elite",
+        "name": "齐云代理(高匿)",
+        "fetch_ok": false,
+        "entries": 0,
+        "rejected": 0,
+        "pages_done": 0,
+        "error": "network: page 1: HTTP 403",
+        "probe": {
+          "requested": false,
+          "sample": 0,
+          "attempted": 0,
+          "pass": 0,
+          "fail": 0
+        },
+        "verdict": "fail",
+        "millis": 1639
+      }
+    ],
+    "scdn": {
+      "ok": false,
+      "requested": 2,
+      "fetched": 0,
+      "error": "network: vendor request: connection reset by peer",
+      "note": "explicit diagnostic call; on-demand candidates never enter the pool",
+      "probe": {
+        "requested": false,
+        "sample": 0,
+        "attempted": 0,
+        "pass": 0,
+        "fail": 0
+      }
+    },
+    "notes": [
+      "fetched entry counts describe parsing, not proxy liveness",
+      "probe phase samples a bounded subset; it is not a guarantee for unprobed entries"
+    ],
+    "all_requested_checks_passed": false
+  },
+  "targeted_retests": [
+    {
+      "source_id": "qiyunip-elite",
+      "result": {
+        "sites": [
+          {
+            "site_id": "qiyunip-elite",
+            "name": "齐云代理(高匿)",
+            "fetch_ok": false,
+            "entries": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "error": "network: page 1: HTTP 403",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0
+            },
+            "verdict": "fail",
+            "millis": 249
+          }
+        ],
+        "notes": [
+          "fetched entry counts describe parsing, not proxy liveness",
+          "probe phase samples a bounded subset; it is not a guarantee for unprobed entries",
+          "SCDN on-demand API not called: pass -scdn explicitly (each call consumes vendor quota)"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "source_id": "lumiproxy-transparent",
+      "result": {
+        "sites": [
+          {
+            "site_id": "lumiproxy-transparent",
+            "name": "LumiProxy(透明)",
+            "fetch_ok": true,
+            "entries": 19,
+            "rejected": 9,
+            "pages_done": 1,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "sample": 2,
+              "attempted": 2,
+              "pass": 0,
+              "fail": 2,
+              "fail_kinds": {
+                "PROXY": 2
+              },
+              "skipped": "no candidate passed validation"
+            },
+            "verdict": "fail",
+            "millis": 7556
+          }
+        ],
+        "notes": [
+          "fetched entry counts describe parsing, not proxy liveness",
+          "probe phase samples a bounded subset; it is not a guarantee for unprobed entries",
+          "SCDN on-demand API not called: pass -scdn explicitly (each call consumes vendor quota)"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "source_id": "openproxylist-https",
+      "result": {
+        "sites": [
+          {
+            "site_id": "openproxylist-https",
+            "name": "OpenProxyList(HTTPS)",
+            "fetch_ok": false,
+            "entries": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "error": "network: page 1: context deadline exceeded",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0
+            },
+            "verdict": "fail",
+            "millis": 8005
+          }
+        ],
+        "notes": [
+          "fetched entry counts describe parsing, not proxy liveness",
+          "probe phase samples a bounded subset; it is not a guarantee for unprobed entries",
+          "SCDN on-demand API not called: pass -scdn explicitly (each call consumes vendor quota)"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "source_id": "proxyscrape-anon",
+      "result": {
+        "sites": [
+          {
+            "site_id": "proxyscrape-anon",
+            "name": "ProxyScrape(普通)",
+            "fetch_ok": false,
+            "entries": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "error": "network: page 1: context deadline exceeded",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0
+            },
+            "verdict": "fail",
+            "millis": 8002
+          }
+        ],
+        "notes": [
+          "fetched entry counts describe parsing, not proxy liveness",
+          "probe phase samples a bounded subset; it is not a guarantee for unprobed entries",
+          "SCDN on-demand API not called: pass -scdn explicitly (each call consumes vendor quota)"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "source_id": "proxyscrape-elite",
+      "result": {
+        "sites": [
+          {
+            "site_id": "proxyscrape-elite",
+            "name": "ProxyScrape(高匿)",
+            "fetch_ok": false,
+            "entries": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "error": "network: page 1: context deadline exceeded",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0
+            },
+            "verdict": "fail",
+            "millis": 8000
+          }
+        ],
+        "notes": [
+          "fetched entry counts describe parsing, not proxy liveness",
+          "probe phase samples a bounded subset; it is not a guarantee for unprobed entries",
+          "SCDN on-demand API not called: pass -scdn explicitly (each call consumes vendor quota)"
+        ],
+        "all_requested_checks_passed": false
+      }
+    }
+  ],
+  "accidental_extra_sweep": {
+    "sites": [
+      {
+        "site_id": "ip3366-normal",
+        "name": "云代理(普通)",
+        "fetch_ok": true,
+        "entries": 15,
+        "rejected": 0,
+        "pages_done": 1,
+        "probe": {
+          "requested": true,
+          "mode": "tls",
+          "sample": 2,
+          "attempted": 2,
+          "pass": 0,
+          "fail": 2,
+          "fail_kinds": {
+            "PROXY": 2
+          },
+          "skipped": "no candidate passed validation"
+        },
+        "verdict": "fail",
+        "millis": 104
+      },
+      {
+        "site_id": "ip89",
+        "name": "89免费代理",
+        "fetch_ok": true,
+        "entries": 2997,
+        "rejected": 3,
+        "pages_done": 1,
+        "probe": {
+          "requested": true,
+          "mode": "tls",
+          "sample": 2,
+          "attempted": 2,
+          "pass": 0,
+          "fail": 2,
+          "fail_kinds": {
+            "PROXY": 2
+          },
+          "skipped": "no candidate passed validation"
+        },
+        "verdict": "fail",
+        "millis": 187
+      },
+      {
+        "site_id": "jiliuip-elite",
+        "name": "积流代理(高匿)",
+        "fetch_ok": true,
+        "entries": 9,
+        "rejected": 0,
+        "pages_done": 1,
+        "probe": {
+          "requested": true,
+          "mode": "tls",
+          "sample": 2,
+          "attempted": 2,
+          "pass": 0,
+          "fail": 2,
+          "fail_kinds": {
+            "PROXY": 2
+          },
+          "skipped": "no candidate passed validation"
+        },
+        "verdict": "fail",
+        "millis": 206
+      },
+      {
+        "site_id": "lumiproxy-anon",
+        "name": "LumiProxy(普通)",
+        "fetch_ok": true,
+        "entries": 20,
+        "rejected": 6,
+        "pages_done": 1,
+        "probe": {
+          "requested": true,
+          "mode": "tls",
+          "sample": 2,
+          "attempted": 2,
+          "pass": 0,
+          "fail": 2,
+          "fail_kinds": {
+            "PROXY": 2
+          },
+          "skipped": "no candidate passed validation"
+        },
+        "verdict": "fail",
+        "millis": 1925
+      },
+      {
+        "site_id": "lumiproxy-elite",
+        "name": "LumiProxy(高匿)",
+        "fetch_ok": true,
+        "entries": 19,
+        "rejected": 7,
+        "pages_done": 1,
+        "probe": {
+          "requested": true,
+          "mode": "tls",
+          "sample": 2,
+          "attempted": 2,
+          "pass": 0,
+          "fail": 2,
+          "fail_kinds": {
+            "PROXY": 2
+          },
+          "skipped": "no candidate passed validation"
+        },
+        "verdict": "fail",
+        "millis": 2275
+      },
+      {
+        "site_id": "lumiproxy-transparent",
+        "name": "LumiProxy(透明)",
+        "fetch_ok": false,
+        "entries": 0,
+        "rejected": 0,
+        "pages_done": 0,
+        "error": "network: page 1: context deadline exceeded",
+        "probe": {
+          "requested": false,
+          "sample": 0,
+          "attempted": 0,
+          "pass": 0,
+          "fail": 0
+        },
+        "verdict": "fail",
+        "millis": 8004
+      },
+      {
+        "site_id": "openproxylist-http",
+        "name": "OpenProxyList(HTTP)",
+        "fetch_ok": true,
+        "entries": 6929,
+        "rejected": 0,
+        "pages_done": 1,
+        "probe": {
+          "requested": true,
+          "mode": "tls",
+          "sample": 2,
+          "attempted": 2,
+          "pass": 0,
+          "fail": 2,
+          "fail_kinds": {
+            "PROXY": 2
+          },
+          "skipped": "no candidate passed validation"
+        },
+        "verdict": "fail",
+        "millis": 6616
+      },
+      {
+        "site_id": "openproxylist-https",
+        "name": "OpenProxyList(HTTPS)",
+        "fetch_ok": true,
+        "entries": 5362,
+        "rejected": 0,
+        "pages_done": 1,
+        "probe": {
+          "requested": true,
+          "mode": "tls",
+          "sample": 2,
+          "attempted": 2,
+          "pass": 0,
+          "fail": 2,
+          "fail_kinds": {
+            "PROXY": 2
+          },
+          "skipped": "no candidate passed validation"
+        },
+        "verdict": "fail",
+        "millis": 3956
+      },
+      {
+        "site_id": "proxyscrape-anon",
+        "name": "ProxyScrape(普通)",
+        "fetch_ok": false,
+        "entries": 0,
+        "rejected": 0,
+        "pages_done": 0,
+        "error": "network: page 1: context deadline exceeded",
+        "probe": {
+          "requested": false,
+          "sample": 0,
+          "attempted": 0,
+          "pass": 0,
+          "fail": 0
+        },
+        "verdict": "fail",
+        "millis": 8000
+      },
+      {
+        "site_id": "proxyscrape-elite",
+        "name": "ProxyScrape(高匿)",
+        "fetch_ok": false,
+        "entries": 0,
+        "rejected": 0,
+        "pages_done": 0,
+        "error": "network: page 1: context deadline exceeded",
+        "probe": {
+          "requested": false,
+          "sample": 0,
+          "attempted": 0,
+          "pass": 0,
+          "fail": 0
+        },
+        "verdict": "fail",
+        "millis": 8026
+      },
+      {
+        "site_id": "qiyunip-elite",
+        "name": "齐云代理(高匿)",
+        "fetch_ok": false,
+        "entries": 0,
+        "rejected": 0,
+        "pages_done": 0,
+        "error": "network: page 1: HTTP 403",
+        "probe": {
+          "requested": false,
+          "sample": 0,
+          "attempted": 0,
+          "pass": 0,
+          "fail": 0
+        },
+        "verdict": "fail",
+        "millis": 301
+      }
+    ],
+    "scdn": {
+      "ok": false,
+      "requested": 2,
+      "fetched": 0,
+      "error": "network: vendor request: connection reset by peer",
+      "note": "explicit diagnostic call; on-demand candidates never enter the pool",
+      "probe": {
+        "requested": false,
+        "sample": 0,
+        "attempted": 0,
+        "pass": 0,
+        "fail": 0
+      }
+    },
+    "notes": [
+      "fetched entry counts describe parsing, not proxy liveness",
+      "probe phase samples a bounded subset; it is not a guarantee for unprobed entries"
+    ],
+    "all_requested_checks_passed": false
+  }
+}
