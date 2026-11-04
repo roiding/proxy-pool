@@ -10,7 +10,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
     go build -buildvcs=false -trimpath \
-      -ldflags="-s -w -linkmode=external -extldflags='-static -no-pie' -X main.version=${VERSION} -X main.vcsRef=${VCS_REF}" \
+      -ldflags="-s -w -linkmode=external -extldflags '-static -no-pie' -X main.version=${VERSION} -X main.vcsRef=${VCS_REF}" \
       -o /out/proxy-pool ./cmd/proxy-pool
 RUN file /out/proxy-pool | grep -q 'statically linked'
 

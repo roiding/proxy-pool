@@ -819,12 +819,39 @@ SQLite/WAL 备份和启动后的数据/CD 保留，再开放下游流量。
 旧渠道、新文件的实网失败与 Huawei 官方用量 Reader 的未验状态保持不变；
 没有为本次发布准备新增供应商探测、付费、云用量调用或 Bark 真推送。
 
+### 6.16 首次推送与实际 Linux 发布构建失败
+
+主代理已提交并推送 `3d7789adf7912b4bf93f05a3b0f8a934104ca5e2` 到 `main`，
+远端 SHA 已逐项核对。提交前对 164 个 index blobs 重新扫描：141 个本次改动文件
+没有真实配置、DB/WAL/锁、私钥、macOS AppleDouble 文件或已知代理秘密；128 项
+源码及 16 项受保护测试在 index 中仍逐项匹配原清单。没有 force push 或 amend。
+
+实际 Actions run `41794100287` 的 Linux 格式、vet、全仓 normal 和 race 测试均
+PASS，但镜像和原生包构建均失败。此时没有发布新的镜像或原生包，更没有部署：
+
+| 编号 | 真实失败与处理 |
+| --- | --- |
+| C59 | Dockerfile 中 `-extldflags='-static -no-pie'` 的引号从 token 中部开始，Go 的 quoted.Split 不把它视为整体，linker 实际收到 `'-static` 并报 `unterminated ' string` |
+
+发布子代理已仅将 Dockerfile 参数改为独立的 `-extldflags '-static -no-pie'`。
+主代理独立重现错误 value 的非零退出，以及完整 value 的 `go tool link -V` 成功；
+这只证明参数解析，不替代 Linux 静态链接。静态 ELF、版本/修订和 checksum 门禁
+没有放宽，生产 Go 源码和受保护测试没有变化。修正必须再次提交并通过实际 Actions
+构建后，才能使用该次不可变运行的产物，不得拿旧 `latest` 镜像冒充新版本。
+
+首次失败的完整脱敏日志和运行状态保存在
+`/tmp/proxy-pool-release-1104/actions-failed.log` 和
+`actions-first-failure-3d7789a.json`。运行链接为
+<https://github.com/roiding/proxy-pool/actions/runs/41794100287>。
+本节记录时，修正后的第二次 CI 尚未执行；目标 Flexus L 的 SSH 连接信息仍未提供。
+
 ## 7. 最终验收
 
 本轮代码实现与本地独立验收已经收口：当前冻结源码的 97 项 root audits、全仓
 normal/race/vet、格式/JS/保护清单、合成负载与真实 main 关闭/重启均已通过。
 不是沿用旧的 81 项绿灯，也没有使用 overlay 或实现者自报替代主代理复跑。
-最新本地结论与证据见第 6.14 节，发布授权及本轮复核见第 6.15 节。
+最新本地结论与证据见第 6.14 节，发布授权及本轮复核见第 6.15 节，实际 Linux
+发布构建的失败与修正见第 6.16 节。
 
 完整发布/实网验收仍未通过：新文件前 12 条实测均 407，旧 11 个目录渠道加 SCDN
 的实网报告仍为 0 PASS；官方 Huawei package Reader 未验证且不可用，实际云/Bark
