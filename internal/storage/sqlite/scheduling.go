@@ -71,9 +71,10 @@ func (s *Store) RecordSourceOutcomeOwned(
 	err := s.tx(ctx, func(t *sql.Tx) error {
 		var enabled int
 		var currentVersion int64
+		var adapter string
 		err := t.QueryRowContext(ctx, `
-			SELECT enabled, config_version FROM sources WHERE source_id = ?`,
-			sourceID).Scan(&enabled, &currentVersion)
+			SELECT enabled, config_version, adapter_type FROM sources WHERE source_id = ?`,
+			sourceID).Scan(&enabled, &currentVersion, &adapter)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrStale
 		}
@@ -85,6 +86,18 @@ func (s *Store) RecordSourceOutcomeOwned(
 		}
 		if currentVersion != sourceConfigVersion {
 			return ErrStale
+		}
+		// Independent connections in a downloaded list are not a shared
+		// upstream failure domain. Three dead rows must not hide hundreds of
+		// untested rows or fresh PASS evidence from the same list. Download
+		// errors have their own persistent source_fetch_state backoff.
+		if adapter == "site_fetch" || adapter == "static_url" || adapter == "account_list" || adapter == "provider_api" {
+			if outcome != "PASS" && outcome != "FAIL" {
+				return fmt.Errorf("unsupported source outcome %q", outcome)
+			}
+			_, err := t.ExecContext(ctx, `DELETE FROM source_circuits WHERE source_id = ?`, sourceID)
+			out = SourceCircuit{SourceID: sourceID, State: CircuitClosed, LastOutcome: "UNKNOWN"}
+			return err
 		}
 		out, err = recordSourceOutcomeTx(ctx, t, sourceID, outcome, now, p)
 		return err
@@ -208,7 +221,7 @@ func (s *Store) CountCoolingSources(ctx context.Context, now time.Time) (int, er
 // not cooling, optionally restricted to the request's source filter. Demand
 // refill uses this when acquire finds no eligible candidates.
 func (s *Store) ProviderSourcesForRefill(ctx context.Context, now time.Time,
-	allowed []string, limit int) ([]string, error) {
+	allowed []string, limit int, projects ...string) ([]string, error) {
 	if limit <= 0 {
 		limit = 1
 	}
@@ -218,6 +231,10 @@ func (s *Store) ProviderSourcesForRefill(ctx context.Context, now time.Time,
 		WHERE src.enabled = 1 AND src.adapter_type = 'provider_api'
 		  AND (sc.cooldown_until IS NULL OR sc.cooldown_until <= ?)`
 	args := []any{fmtTime(now)}
+	if len(projects) > 0 && projects[0] != "" {
+		query += sourceProjectAccessClause
+		args = append(args, projects[0])
+	}
 	switch {
 	case allowed != nil && len(allowed) == 0:
 		// An empty non-nil allowlist authorizes nothing; nil is unrestricted.
@@ -250,16 +267,23 @@ func (s *Store) ProviderSourcesForRefill(ctx context.Context, now time.Time,
 // not cooling, so acquire can supplement the pool from the bounded static
 // cache after the on-demand refill. Order is randomized to spread load.
 func (s *Store) StaticSourcesForRefill(ctx context.Context, now time.Time,
-	allowed []string, limit int) ([]string, error) {
+	allowed []string, limit int, projects ...string) ([]string, error) {
 	if limit <= 0 {
 		limit = 2
 	}
 	query := `
 		SELECT src.source_id FROM sources src
 		LEFT JOIN source_circuits sc ON sc.source_id = src.source_id
-		WHERE src.enabled = 1 AND src.adapter_type IN ('site_fetch','static_url')
+		WHERE src.enabled = 1 AND src.adapter_type IN ('site_fetch','static_url','account_list','provider_api')
 		  AND (sc.cooldown_until IS NULL OR sc.cooldown_until <= ?)`
 	args := []any{fmtTime(now)}
+	if len(projects) > 0 && projects[0] != "" {
+		query += sourceProjectAccessClause
+		args = append(args, projects[0])
+	}
+	if allowed != nil && len(allowed) == 0 {
+		return []string{}, nil
+	}
 	if len(allowed) > 0 {
 		query += " AND src.source_id IN (" + placeholders(len(allowed)) + ")"
 		for _, id := range allowed {

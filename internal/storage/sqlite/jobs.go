@@ -60,22 +60,22 @@ func (s *Store) CreateJobWithLimits(ctx context.Context, j domain.Job, now time.
 		var n int
 		if err := t.QueryRowContext(ctx, `
 			SELECT COUNT(*) FROM jobs
-			WHERE kind = ? AND project_id = ? AND state IN (?,?)`,
-			j.Kind, j.ProjectID, JobPending, JobRunning).Scan(&n); err != nil {
+			WHERE project_id = ? AND state IN (?,?)`,
+			j.ProjectID, JobPending, JobRunning).Scan(&n); err != nil {
 			return err
 		}
 		if n >= perProject {
-			return domain.E("PREWARM_JOB_LIMIT", 409,
-				"project %q already has %d active prewarm jobs", j.ProjectID, n)
+			return domain.E(jobLimitCode(j.Kind), 409,
+				"project %q already has %d active jobs", j.ProjectID, n)
 		}
 		if err := t.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM jobs WHERE kind = ? AND state IN (?,?)`,
-			j.Kind, JobPending, JobRunning).Scan(&n); err != nil {
+			SELECT COUNT(*) FROM jobs WHERE state IN (?,?)`,
+			JobPending, JobRunning).Scan(&n); err != nil {
 			return err
 		}
 		if n >= global {
-			return domain.E("PREWARM_JOB_LIMIT", 409,
-				"deployment already has %d active prewarm jobs", n)
+			return domain.E(jobLimitCode(j.Kind), 409,
+				"deployment already has %d active jobs", n)
 		}
 		_, err := t.ExecContext(ctx, `
 			INSERT INTO jobs(job_id, project_id, kind, state, params_json, target,
@@ -87,9 +87,17 @@ func (s *Store) CreateJobWithLimits(ctx context.Context, j domain.Job, now time.
 	})
 }
 
+func jobLimitCode(kind string) string {
+	if kind == "source_refresh" {
+		return "SOURCE_FETCH_JOB_LIMIT"
+	}
+	return "PREWARM_JOB_LIMIT"
+}
+
 const jobColumns = `
 	job_id, project_id, kind, state, params_json, target, ready, probed, failed,
-	stop_reason, last_error, created_at, updated_at, started_at, finished_at`
+	stop_reason, last_error, created_at, updated_at, started_at, finished_at,
+	EXISTS(SELECT 1 FROM pool_maintenance_jobs pmj WHERE pmj.job_id = jobs.job_id)`
 
 func scanJob(row interface{ Scan(...any) error }) (domain.Job, error) {
 	var j domain.Job
@@ -98,7 +106,7 @@ func scanJob(row interface{ Scan(...any) error }) (domain.Job, error) {
 	var started, finished any
 	err := row.Scan(&j.ID, &j.ProjectID, &j.Kind, &j.State, &params, &j.Target,
 		&j.Ready, &j.Probed, &j.Failed, &j.StopReason, &j.LastError,
-		&created, &updated, &started, &finished)
+		&created, &updated, &started, &finished, &j.Automatic)
 	if err != nil {
 		return domain.Job{}, err
 	}
@@ -283,6 +291,7 @@ func (s *Store) ListProjectJobs(ctx context.Context, projectID string, limit int
 // the caller matches validation_evidence in Go through RecentEvidence and
 // filters fixed project CD the same way.
 type PrewarmQuery struct {
+	ProjectID    string
 	Profile      string
 	Now          time.Time
 	Transports   []domain.Transport
@@ -336,6 +345,10 @@ func (s *Store) SelectPrewarmCandidates(ctx context.Context, q PrewarmQuery) ([]
 		query += `
 		  AND (sc.cooldown_until IS NULL OR sc.cooldown_until <= ?)`
 		args = append(args, fmtTime(q.Now))
+	}
+	if q.ProjectID != "" {
+		query += sourceProjectAccessClause
+		args = append(args, q.ProjectID)
 	}
 	query += `
 		  AND NOT EXISTS (

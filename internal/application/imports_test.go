@@ -96,13 +96,12 @@ func TestImportBatchCountsAddedDuplicateUpdated(t *testing.T) {
 	}
 	var sawExpiry bool
 	for _, c := range cands {
-		if c.Offer.ProviderExpiresAt != nil &&
-			c.Offer.ProviderExpiresAt.Equal(time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)) {
+		if c.Offer.ProviderExpiresAt == nil && c.Offer.Claims["uploaded_expires_at"] == "2026-12-01T00:00:00Z" {
 			sawExpiry = true
 		}
 	}
 	if !sawExpiry {
-		t.Fatal("provider expiry was not stored on the merged offer")
+		t.Fatal("uploaded expiry metadata was not retained without an automatic deadline")
 	}
 }
 

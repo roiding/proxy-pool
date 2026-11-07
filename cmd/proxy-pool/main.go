@@ -74,6 +74,14 @@ func main() {
 		log.Error("migrate failed", "error", err)
 		os.Exit(1)
 	}
+	if err := store.KeepCustomSupply(context.Background()); err != nil {
+		log.Error("configure upload lifetime failed", "error", err)
+		os.Exit(1)
+	}
+	if err := store.BootstrapSourceBlacklist(context.Background(), time.Now()); err != nil {
+		log.Error("initialize source blacklist failed", "error", err)
+		os.Exit(1)
+	}
 
 	rootCAs, err := buildRootCAs(cfg.JudgeCAPem)
 	if err != nil {
@@ -83,7 +91,11 @@ func main() {
 	log.Info("judge endpoint", "path", "/v1/judge", "signed", cfg.JudgeSecret != "",
 		"trust_forwarded", cfg.JudgeTrustForwarded)
 	ingest := application.NewIngestService(store, cfg.IdentitySecret, cfg.AllowPrivateAddresses)
-	if err := ingest.ConfigureStaticCache(cfg.StaticCacheTTL(),
+	if err := ingest.ConfigureSourceSecrets(cfg.SecretEncryptionKey); err != nil {
+		log.Error("source secret encryption config failed", "error", err)
+		os.Exit(1)
+	}
+	if err := ingest.ConfigureStaticCache(application.DefaultStaticCacheTTL,
 		cfg.StaticCacheMaxEntries, cfg.StaticCacheMaxBytes); err != nil {
 		log.Error("static cache config failed", "error", err)
 		os.Exit(1)
@@ -110,6 +122,12 @@ func main() {
 		application.CooldownConfig{Base: cfg.CooldownBase(), Max: cfg.CooldownMax(), Jitter: cfg.CooldownJitter},
 		probeSlots, geoResolver)
 	prewarm := application.NewPrewarmService(store, cfg, cfg.JudgeURL, rootCAs, probeSlots, geoResolver)
+	prewarm.StaticSupply = ingest
+	poolMaintenance := application.NewPoolMaintenanceService(store, prewarm)
+	if cfg.PoolMaintenanceIntervalMS > 0 {
+		poolMaintenance.TargetMetBackoff = time.Duration(cfg.PoolMaintenanceIntervalMS) * time.Millisecond
+	}
+	refreshSvc := application.NewSourceRefreshService(store, ingest, cfg)
 	// Traffic accounting owns its own tables on the same database handle;
 	// its scheduler never touches the acquire path.
 	usageSvc, err := usage.New(db, usage.Options{
@@ -142,11 +160,12 @@ func main() {
 	defer stop()
 	srv := newHTTPServer(cfg,
 		api.NewServer(cfg, log, acquire, ingest, leaseSvc, store, nightly, prewarm, keys,
-			api.WithUsage(usageSvc), api.WithVersion(buildVersion())).Handler(),
+			api.WithUsage(usageSvc), api.WithVersion(buildVersion()), api.WithSourceRefresh(refreshSvc)).Handler(),
 		runCtx, serverTimeout)
 
 	var background sync.WaitGroup
-	background.Add(2)
+	background.Add(3)
+	go func() { defer background.Done(); refreshSvc.Run(runCtx, log) }()
 	go func() {
 		defer background.Done()
 		maintenance.Run(runCtx, store, cfg.SweepInterval(), cfg.AttemptRetention(),
@@ -162,6 +181,11 @@ func main() {
 	if _, err := prewarm.RecoverInterrupted(runCtx); err != nil {
 		log.Warn("prewarm job recovery failed", "error", err)
 	}
+	background.Add(1)
+	go func() {
+		defer background.Done()
+		poolMaintenance.Run(runCtx, log)
+	}()
 	go func() {
 		defer background.Done()
 		usageSvc.Run(runCtx, log)
@@ -193,7 +217,7 @@ func main() {
 		shutdownErr := make(chan struct {
 			name string
 			err  error
-		}, 3)
+		}, 4)
 		go func() {
 			shutdownErr <- struct {
 				name string
@@ -212,7 +236,13 @@ func main() {
 				err  error
 			}{"validation", nightly.Shutdown(shutdownCtx)}
 		}()
-		for i := 0; i < 3; i++ {
+		go func() {
+			shutdownErr <- struct {
+				name string
+				err  error
+			}{"source_refresh", refreshSvc.Shutdown(shutdownCtx)}
+		}()
+		for i := 0; i < 4; i++ {
 			if result := <-shutdownErr; result.err != nil {
 				log.Warn("shutdown component did not finish", "component", result.name, "error", result.err)
 			}

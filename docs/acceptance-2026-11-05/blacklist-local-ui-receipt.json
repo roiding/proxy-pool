@@ -1,0 +1,23 @@
+{
+  "scope": "controlled local fixture; not vendor acceptance",
+  "delivery_entered_blacklist": true,
+  "refresh_and_second_prewarm_upstream_counts_unchanged": true,
+  "before": {
+    "list": 2,
+    "proxy": 1,
+    "denied": 0
+  },
+  "after": {
+    "list": 2,
+    "proxy": 1,
+    "denied": 0
+  },
+  "second_prewarm": {
+    "job_id": "warm_a042d8f88a7223f4be0a1ccc",
+    "state": "PARTIAL",
+    "ready": 0,
+    "probed": 0,
+    "failed": 0,
+    "stop_reason": "inventory_exhausted"
+  }
+}

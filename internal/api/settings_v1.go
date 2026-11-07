@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"proxypool/internal/application"
 	"proxypool/internal/domain"
 	"proxypool/internal/storage/sqlite"
 	"proxypool/internal/usage"
@@ -30,6 +31,7 @@ func (s *Server) handleSystemAdmin(w http.ResponseWriter, _ *http.Request) {
 			"acquire_deadline_ms":        s.cfg.AcquireDeadlineMS,
 			"max_downstream_cooldown_ms": s.cfg.MaxDownstreamCooldownMS,
 			"prewarm_max_deadline_ms":    s.cfg.PrewarmMaxDeadlineMS,
+			"auto_prewarm_max_target":    1000,
 			"job_max_active_per_project": s.cfg.JobMaxActivePerProject,
 			"job_max_active_global":      s.cfg.JobMaxActiveGlobal,
 			"deployment_probe_slots":     s.cfg.ProbeSlots,
@@ -42,6 +44,18 @@ func (s *Server) handleSystemAdmin(w http.ResponseWriter, _ *http.Request) {
 			"allow_private":        s.cfg.AllowPrivateAddresses,
 		},
 		"public_https": s.cfg.PublicHTTPS,
+		"proxy_lifecycle": map[string]any{
+			"all_network_channels_use_cache":                true,
+			"automatic_project_replenishment":               true,
+			"network_cache_ttl_ms":                          application.DefaultStaticCacheTTL.Milliseconds(),
+			"network_delete_on_delivery":                    false,
+			"network_blacklist_on_delivery":                 true,
+			"network_default_reuse_cooldown_ms":             int64(1800000),
+			"upload_delete_on_completed_validation_failure": true,
+			"network_blacklist_on_failure":                  true,
+			"upload_persistent":                             true,
+			"list_upload_proof_clock_expiry":                false,
+		},
 	})
 }
 

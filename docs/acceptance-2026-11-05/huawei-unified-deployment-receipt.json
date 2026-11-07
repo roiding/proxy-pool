@@ -1,0 +1,100 @@
+{
+  "checked_at": "2026-11-05T15:48:40.090525+00:00",
+  "release": "unified-20261105-db86196c23dc",
+  "version": "unified-20261105-db86196c23dc (db86196c23dc)",
+  "source_content_sha256": "db86196c23dc56c0fdb59c6e4a0e3c93f985a101e248bb0b2d23e421c279203e",
+  "base_commit": "b248bb38367a68bea1552eef195860864191d74d",
+  "image_id": "sha256:23a9dd610a4c083072a7bbe8d3e54e12e790be57680ad11036ad1ea185608dd7",
+  "backup_path": "/opt/proxy-pool/backups/unified-20261105-db86196c23dc",
+  "private_health": "ok",
+  "admin_auth": "401_without_auth",
+  "channels": [
+    {
+      "id": "ip3366",
+      "name": "\u4e91\u4ee3\u7406",
+      "variants": 2
+    },
+    {
+      "id": "jiliuip",
+      "name": "\u79ef\u6d41\u4ee3\u7406",
+      "variants": 1
+    },
+    {
+      "id": "qiyunip",
+      "name": "\u9f50\u4e91\u4ee3\u7406",
+      "variants": 1
+    },
+    {
+      "id": "ip89",
+      "name": "89\u514d\u8d39\u4ee3\u7406",
+      "variants": 2
+    },
+    {
+      "id": "lumiproxy",
+      "name": "LumiProxy",
+      "variants": 3
+    },
+    {
+      "id": "proxyscrape",
+      "name": "ProxyScrape",
+      "variants": 4
+    },
+    {
+      "id": "openproxylist",
+      "name": "OpenProxyList",
+      "variants": 4
+    },
+    {
+      "id": "geonode",
+      "name": "Geonode",
+      "variants": 2
+    },
+    {
+      "id": "monosans",
+      "name": "monosans",
+      "variants": 2
+    },
+    {
+      "id": "spys",
+      "name": "Spys",
+      "variants": 1
+    },
+    {
+      "id": "freeproxy",
+      "name": "Free-Proxy-List",
+      "variants": 4
+    },
+    {
+      "id": "ihuan",
+      "name": "\u5c0f\u5e7b\u514d\u8d39\u4ee3\u7406",
+      "variants": 1
+    },
+    {
+      "id": "scdn",
+      "name": "SCDN",
+      "variants": 2
+    },
+    {
+      "id": "webshare",
+      "name": "Webshare",
+      "variants": 2
+    }
+  ],
+  "channel_brands": 14,
+  "preserved_table_counts": {
+    "sources": 4,
+    "proxy_resources": 0,
+    "leases": 18,
+    "projects": 1,
+    "api_keys": 0
+  },
+  "config_sha256_unchanged": true,
+  "geoip_sha256_unchanged": true,
+  "database_quick_check": "ok",
+  "foreign_key_check": "ok",
+  "loopback_port_preserved": true,
+  "cloudflare_allowlist_preserved": true,
+  "public_https": true,
+  "judge_signed": true,
+  "automatic_new_source_creation": false
+}

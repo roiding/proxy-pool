@@ -250,6 +250,9 @@ func (s *Store) SweepExpired(ctx context.Context, now time.Time, attemptRetentio
 	}
 	stats.ExpiredReservations, _ = res.RowsAffected()
 	cutoff := fmtTime(now.Add(-attemptRetention))
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM source_proxy_blacklist WHERE unavailable_until <= ?`, nowStr); err != nil {
+		return stats, mapErr(err)
+	}
 	res, err = s.db.ExecContext(ctx,
 		"DELETE FROM validation_attempts WHERE completed_at < ?", cutoff)
 	if err != nil {
@@ -281,6 +284,8 @@ type Stats struct {
 	ActiveReservations int64 `json:"active_reservations"`
 	HealthPass         int64 `json:"health_pass"`
 	HealthFail         int64 `json:"health_fail"`
+	AttemptPass        int64 `json:"attempt_pass"`
+	AttemptFail        int64 `json:"attempt_fail"`
 }
 
 func (s *Store) Stats(ctx context.Context) (Stats, error) {
@@ -311,6 +316,11 @@ func (s *Store) Stats(ctx context.Context) (Stats, error) {
 		SELECT COUNT(*) FROM scoped_health h
 		JOIN proxy_resources r ON r.resource_id = h.resource_id
 		WHERE h.last_outcome = 'FAIL'`).Scan(&st.HealthFail); err != nil {
+		return st, mapErr(err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(a.outcome='PASS'),0), COALESCE(SUM(a.outcome='FAIL'),0)
+		FROM validation_attempt_sources a JOIN sources s
+		ON s.source_id=a.source_id AND s.config_version=a.source_config_version`).Scan(&st.AttemptPass, &st.AttemptFail); err != nil {
 		return st, mapErr(err)
 	}
 	return st, nil

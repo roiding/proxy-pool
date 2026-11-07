@@ -1,11 +1,17 @@
 package domain
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 type Error struct {
 	Code    string
 	Status  int
 	Message string
+	// RetryAfter is upstream retry guidance, not an authorization status.
+	// API responses expose it as an HTTP header; fetch state persists its deadline.
+	RetryAfter time.Duration
 }
 
 func (e *Error) Error() string { return e.Code + ": " + e.Message }

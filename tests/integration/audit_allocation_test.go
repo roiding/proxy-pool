@@ -354,7 +354,7 @@ func TestAuditOldSourcePassCannotCloseRecreatedCircuit(t *testing.T) {
 	}
 }
 
-func TestAuditUndispatchedExpiredProofDoesNotStartCooldown(t *testing.T) {
+func TestAuditVerifiedUploadSurvivesSlowSiblingWithoutOrphanCooldown(t *testing.T) {
 	e := newEnv(t, startJudge(t), func(c *config.Config) {
 		c.ParallelPerRequest = 2
 		c.ConnectTimeoutMS = 2500
@@ -383,8 +383,8 @@ func TestAuditUndispatchedExpiredProofDoesNotStartCooldown(t *testing.T) {
 	returned := make(map[string]bool)
 	for _, item := range result.Items {
 		returned[e.acquire.FingerprintOf(item.Conn)] = true
-		if time.Since(item.Validation.CompletedAt) > e.cfg.MaxProofAge()+50*time.Millisecond {
-			t.Error("dispatch relaxed the configured proof-age bound")
+		if item.Validation.ValidUntil != nil {
+			t.Error("uploaded PASS was given a clock expiry")
 		}
 	}
 	var fingerprints []string

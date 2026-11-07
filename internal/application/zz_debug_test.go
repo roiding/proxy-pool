@@ -16,7 +16,7 @@ func TestDebugSiteSequentialRefresh(t *testing.T) {
 	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
-		_, _ = w.Write([]byte("203.0.113.200:8080"))
+		_, _ = w.Write([]byte("<table><tr><td>IP</td><td>PORT</td></tr><tr><td>203.0.113.200</td><td>8080</td></tr></table>"))
 	}))
 	defer srv.Close()
 	if _, derr := svc.CreateSource(ctx, "site-seq", SourceConfig{
@@ -34,4 +34,7 @@ func TestDebugSiteSequentialRefresh(t *testing.T) {
 	}
 	res2, derr := svc.RefreshStaticSource(ctx, "site-seq")
 	t.Logf("second: %+v err=%v hits=%d", res2, derr, hits.Load())
+	if derr != nil || !res2.CacheHit || res2.NotModified || hits.Load() != 1 {
+		t.Fatalf("sequential refresh must reuse memory snapshot: %+v %v hits=%d", res2, derr, hits.Load())
+	}
 }

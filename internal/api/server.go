@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"proxypool/internal/application"
@@ -31,6 +32,7 @@ type Server struct {
 	logins     *loginLimiter
 	usage      *usage.Service
 	version    string
+	refresh    *application.SourceRefreshService
 }
 
 // ServerOption extends the server without breaking the established
@@ -46,6 +48,10 @@ func WithUsage(u *usage.Service) ServerOption {
 // WithVersion injects the build version for the system panel.
 func WithVersion(v string) ServerOption {
 	return func(s *Server) { s.version = v }
+}
+
+func WithSourceRefresh(r *application.SourceRefreshService) ServerOption {
+	return func(s *Server) { s.refresh = r }
 }
 
 // WithUploadKeys overrides the default upload-key service. NewServer always
@@ -67,6 +73,16 @@ func NewServer(cfg config.Config, log *slog.Logger, acquire *application.Acquire
 		logins:     newLoginLimiter(cfg.AdminLoginWindow(), cfg.AdminLoginMaxAttempts)}
 	for _, opt := range opts {
 		opt(srv)
+	}
+	if srv.refresh == nil {
+		srv.refresh = application.NewSourceRefreshService(store, ingest, cfg)
+	}
+	if prewarm != nil && ingest != nil {
+		prewarm.StaticSupply = ingest
+	}
+	if ingest != nil {
+		// Config.Validate rejects short nonempty keys before server startup.
+		_ = ingest.ConfigureSourceSecrets(cfg.SecretEncryptionKey)
 	}
 	return srv
 }
@@ -119,6 +135,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/sources/{source_id}/imports", s.handleImportV1)
 	mux.HandleFunc("GET /api/v1/sources/{source_id}/imports/{import_id}", s.handleGetImportV1)
 	mux.HandleFunc("POST /api/v1/admin/sources/{id}/fetch", s.handleFetchSource)
+	mux.HandleFunc("POST /api/v1/admin/sources/{id}/refresh", s.handleStartSourceRefresh)
+	mux.HandleFunc("GET /api/v1/admin/sources/{id}/cache", s.handleSourceCache)
+	mux.HandleFunc("GET /api/v1/admin/sources/{id}/fetch-state", s.handleSourceFetchState)
+	mux.HandleFunc("GET /api/v1/admin/sources/{id}/secret", s.handleSourceSecretStatus)
+	mux.HandleFunc("PUT /api/v1/admin/sources/{id}/secret", s.handleSetSourceSecret)
+	mux.HandleFunc("DELETE /api/v1/admin/sources/{id}/secret", s.handleClearSourceSecret)
+	mux.HandleFunc("GET /api/v1/admin/channel-templates", s.handleChannelTemplates)
 	mux.HandleFunc("POST /api/v1/admin/sources/{id}/validate", s.handleSourceValidate)
 	mux.HandleFunc("GET /api/v1/admin/jobs", s.handleListJobsAdmin)
 	mux.HandleFunc("GET /api/v1/admin/sessions", s.handleListSessionsAdmin)
@@ -216,6 +239,9 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeError(w http.ResponseWriter, err *domain.Error) {
+	if err.RetryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.FormatInt(int64((err.RetryAfter+time.Second-1)/time.Second), 10))
+	}
 	writeJSON(w, err.Status, map[string]any{
 		"error": map[string]any{"code": err.Code, "message": err.Message},
 	})
@@ -354,13 +380,17 @@ func (s *Server) handleCreateSource(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSitesCatalog(w http.ResponseWriter, _ *http.Request) {
 	type catalogSite struct {
-		SiteID    string `json:"site_id"`
-		Name      string `json:"name"`
-		Anonymity string `json:"anonymity"`
-		Parser    string `json:"parser"`
-		Pages     int    `json:"pages"`
-		AutoPages bool   `json:"auto_pages"`
-		Note      string `json:"note"`
+		SiteID        string           `json:"site_id"`
+		Name          string           `json:"name"`
+		Anonymity     string           `json:"anonymity"`
+		Parser        string           `json:"parser"`
+		Pages         int              `json:"pages"`
+		AutoPages     bool             `json:"auto_pages"`
+		Note          string           `json:"note"`
+		Protocol      domain.Transport `json:"protocol"`
+		State         sites.SiteState  `json:"state"`
+		ParserVersion string           `json:"parser_version"`
+		Runnable      bool             `json:"runnable"`
 	}
 	out := make([]catalogSite, 0, len(sites.Catalog))
 	for _, site := range sites.Catalog {
@@ -372,6 +402,7 @@ func (s *Server) handleSitesCatalog(w http.ResponseWriter, _ *http.Request) {
 			Pages:     site.Pages,
 			AutoPages: site.AutoPages,
 			Note:      site.Note,
+			Protocol:  site.Protocol, State: site.State, ParserVersion: site.ParserVersion, Runnable: site.State.Runnable(),
 		})
 	}
 	writeJSON(w, http.StatusOK, out)

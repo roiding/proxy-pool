@@ -344,14 +344,8 @@ func resolveProxyPinned(ctx context.Context, host string, timeout time.Duration,
 	if err != nil {
 		return netip.Addr{}, fmt.Errorf("resolve proxy %q: %w", host, err)
 	}
-	for _, a := range addrs {
-		ip, err := netip.ParseAddr(strings.TrimSpace(a))
-		if err != nil {
-			continue
-		}
-		if domain.AddrAllowed(ip.Unmap(), allowPrivate) {
-			return ip.Unmap(), nil
-		}
+	if ip, ok := domain.SelectPinnedAddress(addrs, allowPrivate, false); ok {
+		return ip, nil
 	}
 	return netip.Addr{}, fmt.Errorf("proxy %q resolved to no allowed address", host)
 }
@@ -403,17 +397,8 @@ func resolveTargetPinned(ctx context.Context, host string, timeout time.Duration
 	if err != nil {
 		return netip.Addr{}, fmt.Errorf("resolve target %q: %w", host, err)
 	}
-	for _, a := range addrs {
-		ip, err := netip.ParseAddr(strings.TrimSpace(a))
-		if err != nil {
-			continue
-		}
-		if ip.Is4In6() {
-			continue
-		}
-		if domain.AddrAllowed(ip, allowPrivate) {
-			return ip.Unmap(), nil
-		}
+	if ip, ok := domain.SelectPinnedAddress(addrs, allowPrivate, true); ok {
+		return ip, nil
 	}
 	return netip.Addr{}, fmt.Errorf("target %q resolved to no allowed address", host)
 }

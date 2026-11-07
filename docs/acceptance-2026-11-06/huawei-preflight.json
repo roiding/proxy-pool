@@ -1,0 +1,13 @@
+{
+  "release": "supplywait-20261106-8e23869c8d2b",
+  "version": "supplywait-20261106-8e23869c8d2b (8e23869c8d2b)",
+  "observed_at": "2026-11-06T12:09:30.106888+00:00",
+  "health": true,
+  "network": "none",
+  "published_ports": [],
+  "automatic_target_disabled_in_copy_only": true,
+  "quick_check": [
+    "ok"
+  ],
+  "foreign_key_errors": []
+}

@@ -176,9 +176,8 @@ func TestAuditAcquireCanonicalJSONResponse(t *testing.T) {
 				}
 				validation := auditWireObject(t, item["validation"])
 				completed := auditWireUTC(t, validation, "completed_at")
-				validUntil := auditWireUTC(t, validation, "valid_until")
-				if !completed.IsZero() && !validUntil.Equal(completed.Add(e.cfg.MaxProofAge())) {
-					t.Errorf("proof validity was replaced by a lease/cache deadline: completed=%s valid_until=%s", completed, validUntil)
+				if string(validation["valid_until"]) != "null" {
+					t.Errorf("uploaded PASS must not have a clock expiry: %s", validation["valid_until"])
 				}
 				leaseExpiry := auditWireUTC(t, item, "lease_expires_at")
 				if !leaseExpiry.After(completed) {
@@ -244,9 +243,8 @@ func TestAuditStickyWireSeparatesBindingLeaseAndProofExpiry(t *testing.T) {
 		item := auditWireObject(t, items[0])
 		leaseExpiry := auditWireUTC(t, item, "lease_expires_at")
 		validation := auditWireObject(t, item["validation"])
-		proofExpiry := auditWireUTC(t, validation, "valid_until")
-		if !bindingExpiry.After(leaseExpiry) || !leaseExpiry.After(proofExpiry) {
-			t.Errorf("three independent deadlines were collapsed: proof=%s lease=%s binding=%s", proofExpiry, leaseExpiry, bindingExpiry)
+		if string(validation["valid_until"]) != "null" || !bindingExpiry.After(leaseExpiry) {
+			t.Errorf("uploaded proof expired or binding/lease deadlines collapsed: proof=%s lease=%s binding=%s", validation["valid_until"], leaseExpiry, bindingExpiry)
 		}
 		for _, name := range []string{"session_changed", "session_binding_version", "session_change_reason"} {
 			if _, exists := item[name]; exists {

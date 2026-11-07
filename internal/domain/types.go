@@ -105,6 +105,9 @@ type Candidate struct {
 	LastPassAt          *time.Time
 	ConsecutiveFailures int
 	Observation         *Observation
+	// CacheExpiresAt is the selection deadline for a disposable list batch.
+	// It is never advertised as the proxy's physical supplier expiry.
+	CacheExpiresAt *time.Time
 }
 
 // Observation is pool-verified evidence about a resource's last successful

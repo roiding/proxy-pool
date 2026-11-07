@@ -1,0 +1,28 @@
+{
+  "checked_at": "2026-11-05T14:05:49.834811+00:00",
+  "release": "blacklist-20261105-1607db3b582d",
+  "local_full_normal": "PASS",
+  "local_full_race": "PASS",
+  "local_full_vet": "PASS",
+  "local_two_builds": "PASS",
+  "admin_js_syntax": "PASS",
+  "diff_check": "PASS",
+  "linux_full_normal": "PASS",
+  "linux_full_vet": "PASS",
+  "linux_static_amd64_builds": "PASS",
+  "isolated_migration_preflight": "PASS",
+  "public_https_and_signed_judge": "PASS",
+  "cloud_cache_reuse": "PASS",
+  "blacklist_ui_roundtrip_seconds": [
+    1800,
+    1801,
+    1800
+  ],
+  "cleanup": {
+    "self_created_buildtools_image_removed": true,
+    "completed_release_build_cache_removed": true,
+    "runtime_image_and_releases_and_backups_preserved": true,
+    "container_health": "healthy"
+  },
+  "note": "local fixtures and cloud bounded public proxy checks are separate evidence; no all-channel or continuous-availability guarantee"
+}

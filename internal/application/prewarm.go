@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -24,7 +25,7 @@ const prewarmPageLimit = 32
 
 // maxPrewarmReadyScan bounds how many eligible candidates a ready
 // re-evaluation may inspect in Go per round.
-const maxPrewarmReadyScan = 400
+const maxPrewarmReadyScan = maxStaticCandidatesGlobal + 400
 
 type PrewarmRequest struct {
 	Count      int     `json:"count"`
@@ -79,15 +80,19 @@ type prewarmScope struct {
 // detached from the creating HTTP connection, and never deliver proxies or
 // write project CD: prewarmed evidence only shortens later acquire probes.
 type PrewarmService struct {
-	store        *sqlite.Store
-	cfg          config.Config
-	judgeURL     string
-	rootCAs      *x509.CertPool
-	health       *HealthRecorder
-	geo          geoip.Resolver
-	probeSlots   chan struct{}
-	sourcePolicy sqlite.SourceCircuitPolicy
-	Now          func() time.Time
+	// StaticSupply contributes disposable list candidates and scoped proof.
+	// It never contributes on-demand provider batches to background jobs.
+	StaticSupply    *IngestService
+	store           *sqlite.Store
+	cfg             config.Config
+	judgeURL        string
+	rootCAs         *x509.CertPool
+	health          *HealthRecorder
+	geo             geoip.Resolver
+	probeSlots      chan struct{}
+	backgroundSlots chan struct{}
+	sourcePolicy    sqlite.SourceCircuitPolicy
+	Now             func() time.Time
 
 	runsMu sync.Mutex
 	// runs maps job IDs of this process to their cancel functions so
@@ -101,13 +106,14 @@ func NewPrewarmService(store *sqlite.Store, cfg config.Config, judgeURL string,
 	rootCAs *x509.CertPool, probeSlots chan struct{}, geo geoip.Resolver) *PrewarmService {
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	return &PrewarmService{
-		store:      store,
-		cfg:        cfg,
-		judgeURL:   judgeURL,
-		rootCAs:    rootCAs,
-		health:     newHealthRecorder(store, cfg),
-		geo:        geo,
-		probeSlots: probeSlots,
+		store:           store,
+		cfg:             cfg,
+		judgeURL:        judgeURL,
+		rootCAs:         rootCAs,
+		health:          newHealthRecorder(store, cfg),
+		geo:             geo,
+		probeSlots:      probeSlots,
+		backgroundSlots: make(chan struct{}, prewarmWorkerLimit(probeSlots)),
 		sourcePolicy: sqlite.SourceCircuitPolicy{
 			FailureThreshold: cfg.SourceFailureThreshold,
 			Base:             cfg.SourceCooldownBase(),
@@ -350,12 +356,28 @@ func (p *PrewarmService) Shutdown(ctx context.Context) error {
 func (p *PrewarmService) execute(ctx context.Context, jobID, projectID string, params prewarmParams) {
 	now := p.Now()
 	if err := p.store.StartJobRun(ctx, jobID, now); err != nil {
-		// Cancelled before the runner claimed it: the row is already final.
+		// The creating call may return just as shutdown or the total budget
+		// expires, before this goroutine claims PENDING. Settle it using a
+		// separate bounded write; an already-terminal cancel remains intact.
+		finalCtx, stop := context.WithTimeout(context.Background(), time.Second)
+		defer stop()
+		state, reason, detail := sqlite.JobFailed, "job_start_failed", "job runner could not start"
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			state, reason, detail = sqlite.JobPartial, "deadline", ""
+		} else if ctx.Err() != nil {
+			state, reason, detail = sqlite.JobCancelled, sqlite.JobStopCanceled, ""
+		}
+		_ = p.store.FinishJob(finalCtx, jobID, state, reason, detail, p.Now())
 		return
 	}
 	deadline := now.Add(time.Duration(params.DeadlineMS) * time.Millisecond)
 	tried := map[string]bool{}
+	sourceTurns := map[string]int{}
 	probed, failed := 0, 0
+	staticLoaded := false
+	loadCtx, cancelLoad := context.WithCancel(ctx)
+	var downloadsDone <-chan struct{}
+	defer cancelLoad()
 	stop, lastErr := "", ""
 	// persistProgress stores the recomputed ready count and real attempt
 	// deltas. The loop stops when the row is already final (cancel won the
@@ -394,6 +416,16 @@ func (p *PrewarmService) execute(ctx context.Context, jobID, projectID string, p
 			stop = "project_state_changed"
 			break
 		}
+		if !staticLoaded && p.StaticSupply != nil {
+			done := make(chan struct{})
+			downloadsDone = done
+			loadScope := *effective
+			go func() {
+				defer close(done)
+				p.loadStaticLists(loadCtx, projectID, loadScope)
+			}()
+			staticLoaded = true
+		}
 		ready, rerr := p.currentReady(ctx, projectID, params, *effective, effective.ScopeHash)
 		if rerr != nil {
 			stop, lastErr = "error", rerr.Error()
@@ -414,7 +446,7 @@ func (p *PrewarmService) execute(ctx context.Context, jobID, projectID string, p
 			stop = "attempt_limit"
 			break
 		}
-		page, perr := p.probePage(ctx, projectID, params, *effective, effective.ScopeHash, tried)
+		page, perr := p.probePage(ctx, projectID, params, *effective, effective.ScopeHash, tried, sourceTurns)
 		if perr != nil {
 			stop, lastErr = "error", perr.Error()
 			break
@@ -423,6 +455,19 @@ func (p *PrewarmService) execute(ctx context.Context, jobID, projectID string, p
 			page = page[:budget]
 		}
 		if len(page) == 0 {
+			if downloadsDone != nil {
+				// Probe ready channels while slower downloads are still running.
+				// An empty page is final only after the bounded loaders finish.
+				timer := time.NewTimer(50 * time.Millisecond)
+				select {
+				case <-downloadsDone:
+					downloadsDone = nil
+				case <-ctx.Done():
+				case <-timer.C:
+				}
+				timer.Stop()
+				continue
+			}
 			if cooling, cerr := p.store.CountCoolingSources(ctx, p.Now()); cerr == nil && cooling > 0 {
 				stop = "sources_cooling"
 			} else {
@@ -430,8 +475,14 @@ func (p *PrewarmService) execute(ctx context.Context, jobID, projectID string, p
 			}
 			break
 		}
+		// Probe only the remaining deficit. The next loop recalculates Ready
+		// before spending another page of attempts.
+		if missing := params.Count - ready; missing > 0 && len(page) > missing {
+			page = page[:missing]
+		}
 		for _, cand := range page {
 			tried[cand.Resource.ID] = true
+			sourceTurns[cand.Offer.SourceID]++
 		}
 		batchProbed, batchFailed := p.probeBatch(ctx, jobID, page, effective.Validation,
 			effective.ScopeHash)
@@ -457,6 +508,10 @@ func (p *PrewarmService) execute(ctx context.Context, jobID, projectID string, p
 		}
 	}
 
+	cancelLoad()
+	if downloadsDone != nil {
+		<-downloadsDone
+	}
 	// Final persistence must not inherit an expired job/probe deadline. It is
 	// a short bounded write and only settles this already-running row.
 	finalCtx, finalCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
@@ -496,6 +551,9 @@ func (p *PrewarmService) execute(ctx context.Context, jobID, projectID string, p
 	for attempt := 0; attempt < 3; attempt++ {
 		err := p.store.FinishJob(finalCtx, jobID, state, stop, lastErr, p.Now())
 		if err == nil {
+			slog.Info("prewarm finished", "job_id", jobID, "project_id", projectID,
+				"state", state, "ready", ready, "target", params.Count,
+				"probed", probed, "failed", failed, "stop_reason", stop)
 			return
 		}
 		var derr *domain.Error
@@ -556,6 +614,7 @@ func (p *PrewarmService) currentScope(ctx context.Context, projectID string,
 func (p *PrewarmService) currentReady(ctx context.Context, projectID string,
 	params prewarmParams, scope prewarmScope, scopeHash string) (int, error) {
 	rows, err := p.store.SelectPrewarmCandidates(ctx, sqlite.PrewarmQuery{
+		ProjectID:         projectID,
 		Profile:           params.Validation.Profile,
 		Now:               p.Now(),
 		Transports:        scope.Transports,
@@ -569,28 +628,47 @@ func (p *PrewarmService) currentReady(ctx context.Context, projectID string,
 	if err != nil {
 		return 0, err
 	}
+	if p.StaticSupply != nil {
+		static, err := p.staticCandidates(ctx, projectID, scope, nil, maxPrewarmReadyScan-len(rows))
+		if err != nil {
+			return 0, err
+		}
+		rows = append(rows, static...)
+	}
 	if len(rows) == 0 {
 		return 0, nil
 	}
 	fresh, ferr := p.store.RecentEvidence(ctx, scopeHash, p.evidenceKeys(rows),
-		p.Now().Add(-p.cfg.EffectiveEvidenceCacheTTL()))
+		time.Time{})
 	if ferr != nil {
 		return 0, ferr
 	}
 	fps := make([]string, 0, len(rows))
-	byFingerprint := map[string]domain.Candidate{}
 	for _, c := range rows {
 		fp := p.fingerprintConn(c.Resource.Conn)
 		fps = append(fps, fp)
-		byFingerprint[fp] = c
 	}
 	blocked, err := p.store.ProjectCooldownBlocked(ctx, projectID, p.Now(), fps)
 	if err != nil {
 		return 0, err
 	}
 	ready := 0
-	for fp, c := range byFingerprint {
-		if _, hit := fresh[fp]; !hit {
+	counted := map[string]bool{}
+	for _, c := range rows {
+		fp := p.fingerprintConn(c.Resource.Conn)
+		if counted[fp] {
+			continue
+		}
+		if isStaticCandidate(c) {
+			if p.StaticSupply == nil {
+				continue
+			}
+			_, obs, ok := p.StaticSupply.StaticRecentEvidence(c, scopeHash, time.Time{})
+			if !ok {
+				continue
+			}
+			c.Observation = obs
+		} else if _, hit := fresh[fp]; !hit {
 			continue
 		}
 		if _, cool := blocked[fp]; cool {
@@ -599,6 +677,7 @@ func (p *PrewarmService) currentReady(ctx context.Context, projectID string,
 		if !countryMatches(scope.Countries, c.Observation) {
 			continue
 		}
+		counted[fp] = true
 		ready++
 	}
 	return ready, nil
@@ -608,12 +687,13 @@ func (p *PrewarmService) currentReady(ctx context.Context, projectID string,
 // PASS evidence and no fixed project-CD window.
 func (p *PrewarmService) probePage(ctx context.Context, projectID string,
 	params prewarmParams, scope prewarmScope, scopeHash string,
-	tried map[string]bool) ([]domain.Candidate, error) {
+	tried map[string]bool, sourceTurns map[string]int) ([]domain.Candidate, error) {
 	exclude := make([]string, 0, len(tried))
 	for id := range tried {
 		exclude = append(exclude, id)
 	}
 	rows, err := p.store.SelectPrewarmCandidates(ctx, sqlite.PrewarmQuery{
+		ProjectID:         projectID,
 		Profile:           params.Validation.Profile,
 		Now:               p.Now(),
 		Transports:        scope.Transports,
@@ -623,40 +703,59 @@ func (p *PrewarmService) probePage(ctx context.Context, projectID string,
 		ScopeUnrestricted: scope.SourceUnrestricted,
 		ScopeEmpty:        scope.SourceEmpty,
 		ExcludeByIDs:      exclude,
-		Limit:             prewarmPageLimit,
+		Limit:             maxPrewarmReadyScan,
 	})
 	if err != nil {
 		return nil, err
+	}
+	if p.StaticSupply != nil {
+		static, err := p.staticCandidates(ctx, projectID, scope, tried, maxPrewarmReadyScan-len(rows))
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, static...)
 	}
 	if len(rows) == 0 {
 		return nil, nil
 	}
 	fresh, err := p.store.RecentEvidence(ctx, scopeHash, p.evidenceKeys(rows),
-		p.Now().Add(-p.cfg.EffectiveEvidenceCacheTTL()))
+		time.Time{})
 	if err != nil {
 		return nil, err
 	}
 	fps := make([]string, 0, len(rows))
-	byFingerprint := map[string]domain.Candidate{}
+	readyPhysical := map[string]bool{}
 	for _, c := range rows {
 		fp := p.fingerprintConn(c.Resource.Conn)
 		fps = append(fps, fp)
-		byFingerprint[fp] = c
+		if isStaticCandidate(c) && p.StaticSupply != nil {
+			if _, obs, ok := p.StaticSupply.StaticRecentEvidence(c, scopeHash, time.Time{}); ok && countryMatches(scope.Countries, obs) {
+				readyPhysical[fp] = true
+			}
+		} else if _, hit := fresh[fp]; hit && countryMatches(scope.Countries, c.Observation) {
+			readyPhysical[fp] = true
+		}
 	}
 	blocked, err := p.store.ProjectCooldownBlocked(ctx, projectID, p.Now(), fps)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]domain.Candidate, 0, len(rows))
+	rows = fairCandidateOrder(rows, sourceTurns)
+	out := make([]domain.Candidate, 0, prewarmPageLimit)
+	selected := map[string]bool{}
 	for _, c := range rows {
 		fp := p.fingerprintConn(c.Resource.Conn)
-		if _, hit := fresh[fp]; hit {
+		if readyPhysical[fp] || selected[fp] {
 			continue
 		}
 		if _, cool := blocked[fp]; cool {
 			continue
 		}
 		out = append(out, c)
+		selected[fp] = true
+		if len(out) >= prewarmPageLimit {
+			break
+		}
 	}
 	return out, nil
 }
@@ -664,6 +763,9 @@ func (p *PrewarmService) probePage(ctx context.Context, projectID string,
 func (p *PrewarmService) evidenceKeys(rows []domain.Candidate) []sqlite.EvidenceKey {
 	keys := make([]sqlite.EvidenceKey, 0, len(rows))
 	for _, c := range rows {
+		if c.Ephemeral {
+			continue
+		}
 		keys = append(keys, sqlite.EvidenceKey{
 			ResourceID:          c.Resource.ID,
 			Fingerprint:         p.fingerprintConn(c.Resource.Conn),
@@ -680,12 +782,12 @@ func (p *PrewarmService) fingerprintConn(conn domain.Connection) string {
 		conn.Host, conn.Port, conn.Username, conn.Password)
 }
 
-// probeBatch probes one bounded page with the shared probe-slot pool. The
-// online acquire path always outranks prewarm for slots; prewarm only gets
-// whatever capacity remains.
+// probeBatch probes a fair, bounded multi-channel page concurrently. All
+// jobs share background admission slots and leave one deployment slot for
+// client requests where possible. Running probes are not preempted.
 func (p *PrewarmService) probeBatch(ctx context.Context, jobID string,
 	page []domain.Candidate, scope domain.ValidationScope, scopeHash string) (probed, failed int) {
-	workers := p.cfg.ProbeSlots
+	workers := cap(p.backgroundSlots)
 	if workers > len(page) {
 		workers = len(page)
 	}
@@ -742,22 +844,42 @@ func (p *PrewarmService) probeBatch(ctx context.Context, jobID string,
 func (p *PrewarmService) probeOne(ctx context.Context, jobID string,
 	scope domain.ValidationScope, scopeHash string, cand domain.Candidate) (attempted, pass bool) {
 	select {
+	case p.backgroundSlots <- struct{}{}:
+		defer func() { <-p.backgroundSlots }()
+	case <-ctx.Done():
+		return false, false
+	}
+	select {
 	case p.probeSlots <- struct{}{}:
 		defer func() { <-p.probeSlots }()
 	case <-ctx.Done():
 		return false, false
 	}
 	now := p.Now()
+	projectID := ""
+	if job, err := p.store.GetJob(ctx, jobID); err == nil {
+		projectID = job.ProjectID
+	} else {
+		return false, false
+	}
 	res, err := p.store.ReserveSlot(ctx, cand, sqlite.ReserveArgs{
 		Owner:               jobID,
 		Profile:             scope.Profile,
 		Now:                 now,
 		ReservationDeadline: now.Add(p.cfg.ProbeTotalTimeout() + 2*time.Second),
+		ProjectID:           projectID, IdentitySecret: p.cfg.IdentitySecret,
 	})
 	if err != nil {
 		return false, false
 	}
-	defer func() { _ = p.store.ReleaseReservation(ctx, res.ReservationID, p.Now()) }()
+	defer func() {
+		// Cancellation is not a reason to leave the connection reserved until
+		// its old deadline. Release through a short independent write while
+		// the shared probe/background slots are still held.
+		writeCtx, stop := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		defer stop()
+		_ = p.store.ReleaseReservation(writeCtx, res.ReservationID, p.Now())
+	}()
 
 	probeCtx, cancel := context.WithTimeout(ctx, p.cfg.ProbeTotalTimeout())
 	ev, fail := validation.Probe(probeCtx, scope, res.Candidate.Resource.Conn,
@@ -774,6 +896,13 @@ func (p *PrewarmService) probeOne(ctx context.Context, jobID string,
 		ev.Outcome = "FAIL"
 		detail = fail.Kind + ": " + fail.Detail
 	}
+	kind := ""
+	if fail != nil {
+		kind = fail.Kind
+	}
+	slog.Info("prewarm probe", "job_id", jobID, "source_id", res.Candidate.Offer.SourceID,
+		"outcome", ev.Outcome, "mode", scope.Mode, "failure_kind", kind,
+		"reason", validation.FailureReason(fail), "latency_ms", ev.LatencyMS)
 	resourceID := res.Candidate.Resource.ID
 	incarnation := res.Candidate.Incarnation
 	if err := p.store.RecordAttemptAttributed(ctx, ev, resourceID, res.ContextKey,
@@ -781,32 +910,26 @@ func (p *PrewarmService) probeOne(ctx context.Context, jobID string,
 		res.Candidate.SourceConfigVersion); err != nil {
 		return true, false
 	}
-	fingerprint := p.fingerprintConn(res.Candidate.Resource.Conn)
 	if fail == nil {
-		_ = p.putCandidateEvidence(ctx, res.Candidate, scopeHash, ev)
-		recordObservation(ctx, p.store, p.geo, resourceID, ev, p.Now())
-		_ = p.health.RecordScoped(ctx, resourceID, res.ContextKey, scope.Profile,
-			"PASS", incarnation)
+		if err := p.putCandidateEvidence(ctx, res.Candidate, scopeHash, ev); err != nil {
+			return true, false
+		}
+		if !res.Candidate.Ephemeral {
+			recordObservation(ctx, p.store, p.geo, resourceID, ev, p.Now())
+			_ = p.health.RecordScoped(ctx, resourceID, res.ContextKey, scope.Profile, "PASS", incarnation)
+		}
 		_, _ = p.store.RecordSourceOutcomeOwned(ctx, res.Candidate.Offer.SourceID,
 			res.Candidate.SourceConfigVersion, "PASS", p.Now(), p.sourcePolicy)
 		return true, true
 	}
-	if fail.Kind == validation.FailAuth {
-		// Wrong credentials are final for this connection config: delete the
-		// resource (no tombstone), drop its sticky snapshots, and expire its
-		// cached evidence. Re-uploads return as unvalidated candidates.
-		retired, rerr := p.store.RetireResourceOwned(ctx, resourceID,
-			incarnation, res.Candidate.Offer.SourceID,
-			res.Candidate.SourceConfigVersion, "AUTH_FAILED", p.Now())
-		if rerr == nil && retired > 0 {
-			_, _ = p.store.ExpireBindingsForFingerprints(ctx, []string{fingerprint}, p.Now())
-			_ = p.store.InvalidateEvidence(ctx, []string{fingerprint})
-		}
-		return true, false
+	if probeHasVerdict(ctx, fail) {
+		_ = retireFailedCandidate(ctx, p.store, p.StaticSupply, res.Candidate, p.cfg.IdentitySecret, p.Now(), projectID)
 	}
+
 	if fail.Attributed() {
-		_ = p.health.RecordScoped(ctx, resourceID, res.ContextKey, scope.Profile,
-			"FAIL", incarnation)
+		if !res.Candidate.Ephemeral {
+			_ = p.health.RecordScoped(ctx, resourceID, res.ContextKey, scope.Profile, "FAIL", incarnation)
+		}
 		_, _ = p.store.RecordSourceOutcomeOwned(ctx, res.Candidate.Offer.SourceID,
 			res.Candidate.SourceConfigVersion, "FAIL", p.Now(), p.sourcePolicy)
 		_ = p.putCandidateEvidence(ctx, res.Candidate, scopeHash, ev)
@@ -816,6 +939,9 @@ func (p *PrewarmService) probeOne(ctx context.Context, jobID string,
 
 func (p *PrewarmService) putCandidateEvidence(ctx context.Context,
 	cand domain.Candidate, scopeHash string, ev domain.Evidence) error {
+	if isStaticCandidate(cand) && p.StaticSupply != nil {
+		return p.StaticSupply.RecordStaticEvidence(ctx, cand, scopeHash, ev, buildObservation(p.geo, ev, p.Now()))
+	}
 	return p.store.PutEvidenceProduction(ctx, sqlite.EvidenceKey{
 		ResourceID:          cand.Resource.ID,
 		Fingerprint:         p.fingerprintConn(cand.Resource.Conn),

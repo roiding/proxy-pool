@@ -35,7 +35,30 @@ func (s *Server) handleSourcesOverview(w http.ResponseWriter, r *http.Request) {
 	if overviews == nil {
 		overviews = []sqlite.SourceOverview{}
 	}
-	writeJSON(w, http.StatusOK, overviews)
+	type view struct {
+		sqlite.SourceOverview
+		ChannelID   string                       `json:"channel_id"`
+		ChannelName string                       `json:"channel_name"`
+		Cache       *application.StaticCacheView `json:"cache,omitempty"`
+		FetchState  *sqlite.SourceFetchState     `json:"fetch_state,omitempty"`
+	}
+	out := make([]view, 0, len(overviews))
+	for _, overview := range overviews {
+		row := view{SourceOverview: overview}
+		row.ChannelID, row.ChannelName = application.SourceChannelIdentity(domain.Source{ID: overview.SourceID, ConfigJSON: overview.ConfigJSON})
+		if overview.AdapterType == application.AdapterSite || overview.AdapterType == application.AdapterStatic || overview.AdapterType == application.AdapterAccount || overview.AdapterType == application.AdapterProvider {
+			cache := s.ingest.CacheViewForSource(domain.Source{ID: overview.SourceID, ConfigVersion: overview.ConfigVersion, Enabled: overview.Enabled})
+			row.Cache = &cache
+			state, err := s.store.SourceFetchState(r.Context(), overview.SourceID)
+			if err != nil {
+				writeStoreError(w, err)
+				return
+			}
+			row.FetchState = &state
+		}
+		out = append(out, row)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleSourceValidate(w http.ResponseWriter, r *http.Request) {

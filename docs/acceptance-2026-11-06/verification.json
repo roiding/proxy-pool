@@ -1,0 +1,23 @@
+{
+  "release": "supplywait-20261106-8e23869c8d2b",
+  "local": {
+    "go_test_all": "passed",
+    "go_vet_all": "passed",
+    "go_test_race_all": "passed",
+    "gofmt": "passed",
+    "git_diff_check": "passed"
+  },
+  "linux": {
+    "go_test_all": "passed",
+    "go_vet_all": "passed",
+    "static_amd64_proxy_pool": "passed",
+    "static_amd64_sitecheck": "passed"
+  },
+  "ui": "jsdom with real authenticated local API; no visual browser validation available",
+  "agents_model": "jpn-cdn-moxuna/deepseek-v4.1-flash",
+  "test_logs": {
+    "go-test.log": "a4de3f854fe01713d40b37057719f8e88c84b28012d5d09c8068a8cfaae071cc",
+    "go-vet.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "go-race.log": "c69c7d49be8f377ec6aa9eae4f8bbd9357f0147216894778a319a18646b80e16"
+  }
+}

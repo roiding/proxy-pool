@@ -19,11 +19,12 @@ func (s *Store) UpdateProject(ctx context.Context, p domain.Project,
 		res, err := t.ExecContext(ctx, `
 			UPDATE projects
 			SET name = ?, enabled = ?, cooldown_ms = ?, timeout_ms = ?,
-			    validation_json = ?, allowed_source_ids = ?,
+			    validation_json = ?, allowed_source_ids = ?, network_reuse_cooldown_ms = ?, auto_prewarm_target = ?,
 			    config_version = config_version + 1, updated_at = ?
 			WHERE project_id = ? AND config_version = ?`,
 			p.Name, boolInt(p.Enabled), p.Defaults.CooldownMS, p.Defaults.TimeoutMS,
-			marshalJSONDefault(p.Defaults.Validation), encodeAllowedSources(p.AllowedSourceIDs),
+			marshalJSONDefault(p.Defaults.Validation), encodeAllowedSources(p.AllowedSourceIDs), normalizedNetworkCooldown(p.Defaults.NetworkReuseCooldownMS),
+			p.Defaults.AutoPrewarmTarget,
 			fmtTime(now), p.ID, expectedVersion)
 		if err != nil {
 			return err

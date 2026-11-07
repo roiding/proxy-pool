@@ -16,6 +16,8 @@ import (
 	"proxypool/internal/integrations/sites"
 )
 
+// The historical audit name is retained for frozen aggregate references.
+// Default supply now prefers ready uploaded inventory instead of the API.
 func TestAuditDefaultSupplyPrefersOnDemandAPI(t *testing.T) {
 	e := newEnv(t, startJudge(t), nil)
 	e.importProxy(t, "audit-upload-fallback", startFakeProxy(t).URL)
@@ -40,8 +42,8 @@ func TestAuditDefaultSupplyPrefersOnDemandAPI(t *testing.T) {
 	if status != http.StatusOK || json.Unmarshal(data, &result) != nil || result.Delivered != 1 {
 		t.Fatalf("healthy supply did not deliver: status=%d body=%s", status, data)
 	}
-	if result.Items[0].SourceID != "audit-api-preferred" {
-		t.Fatalf("default scheduler queued uploaded inventory ahead of the eligible API: %s", data)
+	if result.Items[0].SourceID != "audit-upload-fallback" {
+		t.Fatalf("default scheduler skipped ready uploaded inventory: %s", data)
 	}
 }
 
@@ -198,7 +200,7 @@ func TestAuditStaticURLSuppliesAcquisitionWithoutPublicInventory(t *testing.T) {
 	}
 }
 
-func TestAuditExpiredStaticCacheCanRevalidateWith304(t *testing.T) {
+func TestAuditExpiredStaticCacheIsDeletedAndRedownloaded(t *testing.T) {
 	e := newEnv(t, startJudge(t), nil)
 	var hits atomic.Int64
 	list := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -227,8 +229,8 @@ func TestAuditExpiredStaticCacheCanRevalidateWith304(t *testing.T) {
 		t.Fatal("expired cache was directly offered to consumers")
 	}
 	second, derr := e.ingest.RefreshStaticSource(context.Background(), "audit-static-304")
-	if derr != nil || !second.NotModified || second.Fetched != 1 || second.BatchID != first.BatchID {
-		t.Fatalf("304 after TTL could not refresh retained content: result=%+v err=%v", second, derr)
+	if derr != nil || second.NotModified || second.Fetched != 1 || second.BatchID == first.BatchID {
+		t.Fatalf("expired content/validators were not purged before redownload: result=%+v err=%v", second, derr)
 	}
 	if _, _, ok := e.ingest.CachedStaticCandidates("audit-static-304"); !ok || hits.Load() != 2 {
 		t.Fatalf("successful revalidation did not refresh the bounded cache: ready=%t hits=%d", ok, hits.Load())

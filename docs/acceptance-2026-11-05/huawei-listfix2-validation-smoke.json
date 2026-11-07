@@ -1,0 +1,78 @@
+{
+  "checked_at": "2026-11-05T08:23:04.390751+00:00",
+  "release": "listfix2-20261105-e4dd765f6785",
+  "source_id": "proxyscrape-elite",
+  "validation": "basic signed judge",
+  "per_probe_timeout_ms": 2500,
+  "prewarm": {
+    "job_id": "warm_597bea50d73401c13f916bd8",
+    "state": "COMPLETED",
+    "target": 1,
+    "ready": 1,
+    "probed": 3,
+    "failed": 2,
+    "stop_reason": "target_met",
+    "last_error": "",
+    "started_at": "2026-11-05T08:23:04.401140973Z",
+    "finished_at": "2026-11-05T08:23:07.34010404Z",
+    "passed_attempts": 1
+  },
+  "acquire": {
+    "requested": 1,
+    "delivered": 1,
+    "missing": 0,
+    "partial": false,
+    "reason": null,
+    "request_id": "req_9703398224e141d40d8b8c1f",
+    "evidence": [
+      {
+        "source_id": "proxyscrape-elite",
+        "validation": {
+          "mode": "basic",
+          "completed_at": "2026-11-05T08:23:07.247638205Z",
+          "valid_until": "2026-11-05T08:23:37.247638205Z",
+          "latency_ms": 1546,
+          "cache_hit": true
+        },
+        "lease_expires_at": "2026-11-05T08:23:38.419002266Z"
+      }
+    ],
+    "leases_released": [
+      true
+    ]
+  },
+  "sources": [
+    {
+      "source_id": "proxyscrape-elite",
+      "attempt_pass": 14,
+      "attempt_fail": 55,
+      "circuit_state": "CLOSED",
+      "source_cooldown_until": null,
+      "last_validated_at": "2026-11-05T08:23:07.247638205Z"
+    },
+    {
+      "source_id": "scdn-http",
+      "attempt_pass": 0,
+      "attempt_fail": 0,
+      "circuit_state": "CLOSED",
+      "source_cooldown_until": null,
+      "last_validated_at": null
+    },
+    {
+      "source_id": "spys-http",
+      "attempt_pass": 0,
+      "attempt_fail": 6,
+      "circuit_state": "CLOSED",
+      "source_cooldown_until": null,
+      "last_validated_at": "2026-11-05T05:11:12.437626521Z"
+    }
+  ],
+  "probe_log_outcomes": {
+    "FAIL": 2,
+    "PASS": 1
+  },
+  "probe_fail_reasons": {
+    "judge_error": 2
+  },
+  "completed_at": "2026-11-05T08:23:08.453345+00:00"
+}

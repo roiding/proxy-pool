@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -357,6 +358,9 @@ func TestAuditStickyInitialBindingRespectsChangedOfferDeadline(t *testing.T) {
 	}
 }
 
+// The historical audit name is retained for frozen aggregate references.
+// Reuse keeps the binding and fingerprint, then freshly revalidates a consumed
+// network proof without fetching another vendor batch.
 func TestAuditStickyPrivateAPIBindingReusesWithoutAnotherFetch(t *testing.T) {
 	e := newEnv(t, startJudge(t), nil)
 	proxy := startFakeProxy(t)
@@ -387,9 +391,12 @@ func TestAuditStickyPrivateAPIBindingReusesWithoutAnotherFetch(t *testing.T) {
 		}
 		if call == 0 {
 			first = result
-		} else if result.BindingVersion != first.BindingVersion || !result.Items[0].Validation.CacheHit ||
-			e.acquire.FingerprintOf(result.Items[0].Conn) != e.acquire.FingerprintOf(first.Items[0].Conn) {
-			t.Fatalf("same-session private reuse changed binding or skipped the cache marker: first=%+v next=%+v", first, result)
+		} else if result.BindingVersion != first.BindingVersion ||
+			e.acquire.FingerprintOf(result.Items[0].Conn) != e.acquire.FingerprintOf(first.Items[0].Conn) ||
+			result.SessionChanged || result.Items[0].SessionChanged ||
+			result.Items[0].Validation.CacheHit ||
+			!result.Items[0].Validation.CompletedAt.After(first.Items[0].Validation.CompletedAt) {
+			t.Fatalf("same-session private reuse changed binding or did not freshly revalidate: first=%+v next=%+v", first, result)
 		}
 	}
 	if fetches.Load() != 1 {
@@ -530,6 +537,7 @@ func TestAuditStickyProbeSaturationDoesNotDestroyPrivateBinding(t *testing.T) {
 			type circuitSnapshot struct {
 				State, Outcome, Cooldown, Success, Failure, Updated string
 				Failures, Opens                                     int
+				Exists                                              bool
 			}
 			readCircuit := func() circuitSnapshot {
 				t.Helper()
@@ -541,8 +549,12 @@ func TestAuditStickyProbeSaturationDoesNotDestroyPrivateBinding(t *testing.T) {
 					FROM source_circuits WHERE source_id = ?`, sourceID).Scan(
 					&snapshot.State, &snapshot.Failures, &snapshot.Opens, &snapshot.Outcome,
 					&snapshot.Cooldown, &snapshot.Success, &snapshot.Failure, &snapshot.Updated); err != nil {
+					if errors.Is(err, sql.ErrNoRows) {
+						return snapshot
+					}
 					t.Fatal(err)
 				}
+				snapshot.Exists = true
 				return snapshot
 			}
 			circuitBefore := readCircuit()
@@ -896,9 +908,20 @@ func TestAuditStickyMatchingVerifiedCountryCanReuseOwnBinding(t *testing.T) {
 						t.Fatalf("fixture did not freshly verify the requested country: %+v", result)
 					}
 					first = result
-				} else if result.BindingVersion != first.BindingVersion || !result.Items[0].Validation.CacheHit ||
-					e.acquire.FingerprintOf(result.Items[0].Conn) != e.acquire.FingerprintOf(first.Items[0].Conn) {
-					t.Fatalf("matching fresh country forced a new allocation instead of own-binding reuse: first=%+v next=%+v", first, result)
+				} else {
+					if result.BindingVersion != first.BindingVersion ||
+						e.acquire.FingerprintOf(result.Items[0].Conn) != e.acquire.FingerprintOf(first.Items[0].Conn) ||
+						result.SessionChanged || result.Items[0].SessionChanged {
+						t.Fatalf("matching fresh country forced a new allocation instead of own-binding reuse: first=%+v next=%+v", first, result)
+					}
+					if kind == "inventory" {
+						if !result.Items[0].Validation.CacheHit {
+							t.Fatalf("inventory binding did not reuse its current proof: first=%+v next=%+v", first, result)
+						}
+					} else if result.Items[0].Validation.CacheHit ||
+						!result.Items[0].Validation.CompletedAt.After(first.Items[0].Validation.CompletedAt) {
+						t.Fatalf("consumed network proof was not freshly revalidated: first=%+v next=%+v", first, result)
+					}
 				}
 			}
 			if kind == "api" {

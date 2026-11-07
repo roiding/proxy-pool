@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"proxypool/internal/domain"
 )
@@ -102,7 +103,23 @@ func parseLine(opts LinesOptions, line string) (domain.Connection, error) {
 				"password exceeds %d bytes", MaxCredentialBytes)
 		}
 	}
+	if err := ValidateCredentials(conn.Username, conn.Password); err != nil {
+		return domain.Connection{}, err
+	}
 	return conn, nil
+}
+
+// ValidateCredentials is shared by URI and structured source/import rows.
+// In particular, control separators cannot be admitted into identity fields.
+// Error details never contain the rejected username/password.
+func ValidateCredentials(username, password string) error {
+	if len(username) > MaxCredentialBytes || len(password) > MaxCredentialBytes {
+		return fmt.Errorf("proxy credentials exceed %d bytes", MaxCredentialBytes)
+	}
+	if !utf8.ValidString(username) || !utf8.ValidString(password) || strings.ContainsFunc(username+password, func(r rune) bool { return r < ' ' || r == 127 }) {
+		return fmt.Errorf("proxy credentials contain invalid encoding or control characters")
+	}
+	return nil
 }
 
 // NormalizeHost validates and canonicalizes one import host. The text and
@@ -136,6 +153,22 @@ func NormalizeHost(raw string, allowPrivate bool) (string, error) {
 			return "", fmt.Errorf("address %s rejected by address policy", ip.String())
 		}
 		return ip.String(), nil
+	}
+	// A malformed or octal-looking IPv4 quad must not fall back to DNS.
+	// Otherwise aliases such as 001.2.3.4 can acquire another connection
+	// identity while some resolvers still interpret them as the same IP.
+	parts := strings.Split(strings.TrimSuffix(host, "."), ".")
+	if len(parts) == 4 {
+		numeric := true
+		for _, part := range parts {
+			if part == "" || strings.ContainsFunc(part, func(r rune) bool { return r < '0' || r > '9' }) {
+				numeric = false
+				break
+			}
+		}
+		if numeric {
+			return "", fmt.Errorf("invalid IPv4 address")
+		}
 	}
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	if !validHostname(host) {

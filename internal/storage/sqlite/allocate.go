@@ -235,9 +235,18 @@ func (s *Store) ReserveSlot(ctx context.Context, cand domain.Candidate, a Reserv
 // There are no inventory rows: eligibility keys on the deterministic
 // connection fingerprint, the source's live state, and the consumer CD.
 func (s *Store) reserveEphemeral(ctx context.Context, cand domain.Candidate, a ReserveArgs) (Reserved, error) {
+	if cand.CacheExpiresAt != nil && !cand.CacheExpiresAt.After(a.Now) {
+		return Reserved{}, ErrNotEligible
+	}
 	var out Reserved
 	err := s.tx(ctx, func(t *sql.Tx) error {
 		out = Reserved{}
+		fp := cand.Resource.ID
+		if blocked, err := sourceProxyBlockedTx(ctx, t, cand.Offer.SourceID, fp, a.Now); err != nil {
+			return err
+		} else if blocked {
+			return ErrNotEligible
+		}
 		maxLeases := cand.Offer.MaxPoolLeases
 		if maxLeases <= 0 {
 			maxLeases = 1
@@ -259,6 +268,9 @@ func (s *Store) reserveEphemeral(ctx context.Context, cand domain.Candidate, a R
 		}
 		if srcEnabled != 1 {
 			return ErrNotEligible
+		}
+		if cand.SourceConfigVersion > 0 && cand.SourceConfigVersion != srcVersion {
+			return ErrStale
 		}
 		if err := projectKeyGuardsTx(t, ctx, a.ProjectID, a.KeyID, cand.Offer.SourceID); err != nil {
 			return err
@@ -425,6 +437,32 @@ func commitProjectGuards(t *sql.Tx, ctx context.Context, a CommitArgs, sourceID 
 // still enabled. Reserve and commit both call it, so a project disable,
 // allowlist edit, or key rotation between the two phases is caught.
 func projectKeyGuardsTx(t *sql.Tx, ctx context.Context, projectID, keyID, sourceID string) error {
+	if sourceID != "" {
+		var raw string
+		err := t.QueryRowContext(ctx, `SELECT config_json FROM sources WHERE source_id=?`, sourceID).Scan(&raw)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			var cfg struct {
+				Access *struct {
+					ProjectIDs []string `json:"project_ids"`
+				} `json:"access"`
+			}
+			if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+				return err
+			}
+			if cfg.Access != nil && cfg.Access.ProjectIDs != nil {
+				allowed := false
+				for _, id := range cfg.Access.ProjectIDs {
+					allowed = allowed || id == projectID
+				}
+				if !allowed {
+					return ErrNotEligible
+				}
+			}
+		}
+	}
 	if projectID != "" {
 		var enabled int
 		err := t.QueryRowContext(ctx,

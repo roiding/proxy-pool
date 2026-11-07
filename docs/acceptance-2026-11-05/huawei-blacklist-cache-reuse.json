@@ -1,0 +1,27 @@
+{
+  "release": "blacklist-20261105-1607db3b582d",
+  "checked_at": "2026-11-05T14:01:53.366952+00:00",
+  "refreshes": [
+    {
+      "source_id": "freeproxy-http",
+      "job_state": "COMPLETED",
+      "stop_reason": "cache_reused",
+      "same_batch_and_fetch_state": true
+    },
+    {
+      "source_id": "proxyscrape-elite",
+      "job_state": "COMPLETED",
+      "stop_reason": "cache_reused",
+      "same_batch_and_fetch_state": true
+    },
+    {
+      "source_id": "spys-http",
+      "job_state": "COMPLETED",
+      "stop_reason": "cache_reused",
+      "same_batch_and_fetch_state": true
+    }
+  ],
+  "container": "running healthy",
+  "error_logs_last_15m": 0,
+  "warning_logs_last_15m": 1
+}

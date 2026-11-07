@@ -1,3 +1,7 @@
+> **统一渠道与自动补足更新（2026-11-05）**：所有已启用、项目有权使用的网络渠道（含 SCDN `provider_api`）统一使用 30 分钟内存缓存、持久临时黑名单和并发预热。项目 `auto_prewarm_target` 控制自动维持数量；0 关闭。本文下方较早的 provider 仅请求内生存等口径已被替代。管理台改为可视化表单。详见 `unified-channels-and-console-2026-11-05.md`。
+
+> **2026-11-05 最新生命周期规则优先于本文旧 TTL 口径**：网络代理验活失败/成功下发后，同一来源默认临时禁用 30 分钟，不再预热或下发；黑名单持久化，下游项目的 `network_reuse_cooldown_ms` 可配置时长。网络列表整批缓存 30 分钟，有效缓存期间不重复拉取。自上传代理永久保存，只有实际验活失败才删除。列表/上传 PASS 无独立 30 秒失效。项目权限、准确验证范围、配置版本与 CD 检查不变。详见 `proxy-lifecycle-2026-11-05.md`。
+
 # Source Integration Contract
 
 Version: 0.9 (requirements clarified 2026-11-02). Status: the durable custom
@@ -400,4 +404,94 @@ Contract tests MUST cover:
 - Safe bounded error/backoff/billing behavior under timeouts and retries.
 
 Adding a format is complete only when its normalized contract fixtures pass and
-the unchanged acquisition path can import, validate, and lease its resources.
+the shared acquisition path can fetch/read or import (according to its supply
+mode), validate, and lease the connection. A list adapter must not satisfy this
+check by quietly copying its disposable candidates into persistent inventory.
+
+## 9. Runtime Channel Contract — 2026-11-04
+
+The current JSON source registry is closed: `custom + lines_v1`,
+`provider_api + json_mapping_v1` (SCDN only), `site_fetch + site_v1`,
+`static_url + lines_v1`, and `account_list + webshare_list_v1`. Section 7's YAML
+and generic mapping/budget examples remain design examples, not accepted API
+payloads. No runtime plugins, scripts, arbitrary vendor extraction URL or
+user-supplied field-mapping expressions are enabled.
+
+`SourceConfig` is typed, with one of `provider`, `site`, `static`, `account` (or
+none for uploads), and optional `refresh`/`access`. The admin console creates
+templates disabled. Saving or enabling a definition does not itself fetch or
+probe; an explicitly configured interval list is subsequently scheduled.
+
+### List snapshots and authority
+
+- Public files/HTML/JSON remain lists even when their URL contains `/api/`.
+  They use bounded per-source memory snapshots. Only uploads create persistent
+  candidate stock; on-demand provider batches die with the requesting operation.
+- Parsed/fetched, unique, retained and rejected counts are distinct. Error
+  details are bounded independently of the full rejection count. Sampling or
+  page truncation is explicitly incomplete coverage, not a full-site snapshot.
+- The supplier's protocol, anonymity, country, `valid`, update/check timestamp
+  and latency are claims, not pool validation evidence. Unknown expiry stays
+  null. An HTTP CONNECT/HTTPS label does not mean TLS to the proxy itself.
+- A list TTL starts at successful download/parse. Refresh failure never extends
+  the old hard deadline. A 304 preserves its incarnation and proof ages, merging
+  intervening FAIL/removal state at installation; memory replay is `cache_hit`,
+  not `not_modified`. A new 200 batch gets a new incarnation and no inherited
+  PASS proof.
+- Same-scope proof lives in the bounded batch cache. A newer FAIL supersedes
+  PASS. Final delivery fences replacement/removal/evidence updates and checks
+  actual time, source version, project/key access and candidate presence in its
+  transaction. Evicting evidence costs another probe, not a bypass.
+- A used sticky connection may be revalidated without retaining its original
+  list in inventory. It cannot silently reuse missing list proof. Authentication
+  removal clears only the current source configuration's owned binding snapshots
+  and preserves project CD and independent sources.
+
+### Account keys, project ceilings and jobs
+
+Webshare reads only the fixed direct-list endpoint. Every page, count, `next`
+origin/path/query and valid record is checked before replacement. Any page
+failure or configured full-snapshot overflow rejects the whole refresh.
+
+An account source requires `access.project_ids` to be an explicit array. Source
+access is the intersection with project/request source ceilings and is applied
+before bounded selection/refill/Ready limits, then again at final reserve and
+delivery. Omitted/null access is public for non-account sources; `[]` denies all.
+
+Account API keys are separate from returned proxy credentials and source JSON.
+They are encrypted at rest with the deployment `secret_encryption_key` (at least
+32 bytes), using independent derivation and AES-GCM source/secret-version AAD.
+There is no fallback to the identity secret or admin token. PUT/DELETE require
+the live source `config_version`; rotation/clear invalidates old cache and proof.
+GET exposes status/version only, never plaintext or ciphertext.
+
+`source_refresh` is an admin-only bounded job. Its historical `ready` field means
+retained unvalidated cached rows, unlike prewarm's scoped validated qualification.
+Both kinds share durable job caps. Startup marks abandoned jobs interrupted.
+`NextFetchAt` is the persisted upstream floor/backoff; `NextRefreshAt` is a
+separate configured interval schedule. The same Webshare credential uses a
+shared HMAC-keyed read-rate window across source instances/restart; it is **not**
+a daily credit, purchasing or quota accounting implementation.
+
+Commercial extraction contracts without current account/API/quota fixtures are
+explicitly pending. TLS-intercepting scraping gateways remain incompatible with
+the existing end-to-end target TLS contract. They are not enabled through a
+generic parser or weaker certificate policy. Local fixture tests are development
+verification; real per-channel acceptance is a separate gate described in the
+[runbook](channel-acceptance-runbook-2026-11-04.md).
+
+### 9.8 Supplier-level channel admission (2026-11-05)
+
+`GET /api/v1/admin/channel-templates` is the curated supplier directory. One
+supplier has one stable `id`, combined `transports`, and complete `variants`
+(protocol/endpoint/filter configurations). It contains only engineering-admitted
+products, not retired, incompatible or awaiting-contract placeholders. API and
+UI grouping does not merge persisted `source_id`s, project access, account
+secrets, caches, evidence, leases or CD. `/admin/sites` and explicit CLI `-site`
+remain low-level compatibility/diagnostic surfaces, not the admitted directory.
+
+New site sources (including legacy bootstrap/upsert API creation) require
+admission; a configuration cannot change to an excluded endpoint. Unchanged
+existing definitions remain editable without deletion or migration. Template
+admission has no bearing on live fetch/probe success and is not a promise of
+daily free allocation. Rejected proposals live only in the value-review document.

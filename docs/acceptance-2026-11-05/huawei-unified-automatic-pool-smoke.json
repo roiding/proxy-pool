@@ -1,0 +1,119 @@
+{
+  "release": "unified-20261105-db86196c23dc",
+  "checked_at": "2026-11-05T15:50:43.377182+00:00",
+  "project_id": "default",
+  "auto_prewarm_target": 100,
+  "first_auto_job": {
+    "job_id": "warm_e3297cc313a1eb1cbd80e944",
+    "automatic": true,
+    "state": "PARTIAL",
+    "target": 100,
+    "ready": 14,
+    "probed": 320,
+    "failed": 306,
+    "stop_reason": "deadline",
+    "started_at": "2026-11-05T15:48:42.641212572Z",
+    "finished_at": "2026-11-05T15:50:42.7707881Z"
+  },
+  "scope": "project default validation via configured signed Judge; normal TLS",
+  "enabled_network_sources": [
+    "freeproxy-http",
+    "proxyscrape-elite",
+    "scdn-http",
+    "spys-http"
+  ],
+  "per_source": [
+    {
+      "source_id": "freeproxy-http",
+      "adapter": "site_fetch",
+      "cache_candidates": 300,
+      "cache_verified": 7,
+      "blacklisted": 111,
+      "fetched_at": "2026-11-05T23:48:43.022341433+08:00",
+      "fetch_error_code": "",
+      "attempts_since_first_auto_job": [
+        {
+          "outcome": "FAIL",
+          "count": 111
+        },
+        {
+          "outcome": "PASS",
+          "count": 7
+        }
+      ]
+    },
+    {
+      "source_id": "proxyscrape-elite",
+      "adapter": "site_fetch",
+      "cache_candidates": 411,
+      "cache_verified": 5,
+      "blacklisted": 86,
+      "fetched_at": "2026-11-05T23:48:43.71801807+08:00",
+      "fetch_error_code": "",
+      "attempts_since_first_auto_job": [
+        {
+          "outcome": "FAIL",
+          "count": 86
+        },
+        {
+          "outcome": "PASS",
+          "count": 5
+        }
+      ]
+    },
+    {
+      "source_id": "scdn-http",
+      "adapter": "provider_api",
+      "cache_candidates": 20,
+      "cache_verified": 0,
+      "blacklisted": 20,
+      "fetched_at": "2026-11-05T23:48:43.392219153+08:00",
+      "fetch_error_code": "",
+      "attempts_since_first_auto_job": [
+        {
+          "outcome": "FAIL",
+          "count": 20
+        }
+      ]
+    },
+    {
+      "source_id": "spys-http",
+      "adapter": "site_fetch",
+      "cache_candidates": 400,
+      "cache_verified": 2,
+      "blacklisted": 89,
+      "fetched_at": "2026-11-05T23:48:43.58892365+08:00",
+      "fetch_error_code": "",
+      "attempts_since_first_auto_job": [
+        {
+          "outcome": "FAIL",
+          "count": 89
+        },
+        {
+          "outcome": "PASS",
+          "count": 2
+        }
+      ]
+    }
+  ],
+  "acquire": {
+    "delivered": 1,
+    "cache_hits": [
+      true
+    ]
+  },
+  "following_auto_job": {
+    "job_id": "warm_f640600b794681beaaf40bc3",
+    "automatic": true,
+    "state": "RUNNING",
+    "target": 100,
+    "ready": 13,
+    "probed": 0,
+    "failed": 0,
+    "stop_reason": "",
+    "started_at": "2026-11-05T15:50:47.756398393Z",
+    "finished_at": null
+  },
+  "health": "healthy",
+  "completed_at": "2026-11-05T15:50:48.443326+00:00"
+}

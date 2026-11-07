@@ -67,6 +67,28 @@ func TestParseLinesRejectsPrivateAndInvalid(t *testing.T) {
 	}
 }
 
+func TestHostNormalizationDoesNotStripZonesOrGuessMalformedIPv4(t *testing.T) {
+	for _, host := range []string{"[fe80::1%en0]", "001.2.3.4", "999.1.1.1", "1.2.3.4."} {
+		if normalized, err := NormalizeHost(host, true); err == nil {
+			t.Fatalf("invalid/ambiguous IP %q normalized to %q", host, normalized)
+		}
+	}
+	for host, want := range map[string]string{"Proxy.Example.": "proxy.example", "[::ffff:8.8.8.8]": "8.8.8.8"} {
+		if got, err := NormalizeHost(host, false); err != nil || got != want {
+			t.Fatalf("legal host lost: %q => %q %v", host, got, err)
+		}
+	}
+}
+
+func TestCredentialControlsCannotEnterConnectionIdentity(t *testing.T) {
+	for _, raw := range []string{"http://first%1Fsecond:secret@8.8.8.8:8080", "http://first:secret%00@8.8.8.8:8080", "http://first:secret%FF@8.8.8.8:8080"} {
+		rows, rejected := ParseLines(LinesOptions{}, raw)
+		if len(rows) != 0 || len(rejected) != 1 || rejected[0].Input != "" || strings.Contains(rejected[0].Error, "secret") {
+			t.Fatalf("invalid credential accepted or echoed: %+v %+v", rows, rejected)
+		}
+	}
+}
+
 func contains(haystack, needle string) bool {
 	return len(haystack) >= len(needle) && (haystack == needle ||
 		len(needle) == 0 || indexOf(haystack, needle) >= 0)

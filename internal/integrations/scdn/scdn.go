@@ -7,15 +7,18 @@ package scdn
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"proxypool/internal/domain"
+	"proxypool/internal/integrations/custom"
+	"proxypool/internal/integrations/sourcehttp"
 )
 
 const (
@@ -91,10 +94,12 @@ type EntryError struct {
 }
 
 type FetchResult struct {
-	Endpoint  string
-	Requested int
-	Entries   []Entry
-	Errors    []EntryError
+	Endpoint      string
+	Requested     int
+	Entries       []Entry
+	Errors        []EntryError
+	RejectedCount int
+	Fetched       int
 }
 
 type ErrorKind string
@@ -106,9 +111,11 @@ const (
 )
 
 type Error struct {
-	Kind   ErrorKind
-	Status int
-	Detail string
+	Kind       ErrorKind
+	Status     int
+	Detail     string
+	Code       string
+	RetryAfter time.Duration
 }
 
 func (e *Error) Error() string { return string(e.Kind) + ": " + e.Detail }
@@ -117,8 +124,8 @@ type apiEnvelope struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    struct {
-		Proxies []string `json:"proxies"`
-		Count   int      `json:"count"`
+		Proxies *[]string `json:"proxies"`
+		Count   int       `json:"count"`
 	} `json:"data"`
 }
 
@@ -128,22 +135,34 @@ type apiEnvelope struct {
 // envelope) fails the whole fetch.
 func Fetch(ctx context.Context, client *http.Client, endpoint string, cfg Config, allowPrivate bool) (FetchResult, error) {
 	result := FetchResult{Endpoint: endpoint, Requested: cfg.count()}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+cfg.QueryParams().Encode(), nil)
+	if err := cfg.Validate(); err != nil {
+		return result, &Error{Kind: KindFormat, Status: 400, Detail: "invalid provider configuration"}
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.User != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.RawQuery != "" || u.Fragment != "" {
+		return result, &Error{Kind: KindFormat, Status: 400, Detail: "invalid provider endpoint"}
+	}
+	u.RawQuery = cfg.QueryParams().Encode()
+	if client == nil {
+		client = sourcehttp.NewHTTPClient(sourcehttp.Options{AllowPrivate: allowPrivate, MaxBytes: MaxResponseBytes})
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return result, &Error{Kind: KindFormat, Status: 500, Detail: "build request: " + err.Error()}
+		return result, &Error{Kind: KindFormat, Status: 500, Detail: "could not build provider request"}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return result, &Error{Kind: KindNetwork, Status: 503, Detail: "vendor request: " + err.Error()}
+		return result, sourceRequestError(ctx, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return result, &Error{Kind: KindProvider, Status: 502,
-			Detail: fmt.Sprintf("vendor HTTP status %d", resp.StatusCode)}
+		return result, providerError(resp.StatusCode, resp.Header.Get("Retry-After"))
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBytes+1))
 	if err != nil {
-		return result, &Error{Kind: KindNetwork, Status: 503, Detail: "read vendor response: " + err.Error()}
+		return result, sourceRequestError(ctx, err)
 	}
 	if len(body) > MaxResponseBytes {
 		return result, &Error{Kind: KindFormat, Status: 502,
@@ -151,31 +170,73 @@ func Fetch(ctx context.Context, client *http.Client, endpoint string, cfg Config
 	}
 	var env apiEnvelope
 	if err := json.Unmarshal(body, &env); err != nil {
-		return result, &Error{Kind: KindFormat, Status: 502, Detail: "decode vendor JSON: " + err.Error()}
+		return result, &Error{Kind: KindFormat, Status: 502, Detail: "vendor response is not a valid proxy-list envelope"}
 	}
 	if env.Code != http.StatusOK {
-		return result, &Error{Kind: KindProvider, Status: 502,
-			Detail: fmt.Sprintf("vendor code %d message %q", env.Code, env.Message)}
+		return result, providerError(env.Code, resp.Header.Get("Retry-After"))
+	}
+	if env.Data.Proxies == nil || len(*env.Data.Proxies) > 1000 {
+		return result, &Error{Kind: KindFormat, Status: 502, Detail: "vendor proxy array is missing or exceeds the record limit"}
 	}
 	seen := map[string]bool{}
 	transport, terr := transportFor(cfg.Protocol)
 	if terr != nil {
 		return result, terr
 	}
-	for i, raw := range env.Data.Proxies {
+	for i, raw := range *env.Data.Proxies {
 		entry, err := parseEntry(transport, raw, allowPrivate)
 		if err != nil {
-			result.Errors = append(result.Errors, EntryError{Line: i + 1, Input: raw, Error: err.Error()})
+			result.RejectedCount++
+			if len(result.Errors) < 100 {
+				result.Errors = append(result.Errors, EntryError{Line: i + 1, Error: err.Error()})
+			}
 			continue
 		}
+		result.Fetched++
 		key := string(entry.Transport) + "|" + entry.Host + "|" + strconv.Itoa(entry.Port)
 		if seen[key] {
 			continue
 		}
 		seen[key] = true
 		result.Entries = append(result.Entries, entry)
+		if len(result.Entries) >= MaxCount {
+			break
+		}
+	}
+	if len(*env.Data.Proxies) > 0 && len(result.Entries) == 0 {
+		return result, &Error{Kind: KindFormat, Status: 502, Detail: "vendor response has no valid proxy records"}
 	}
 	return result, nil
+}
+
+func providerError(status int, retry string) *Error {
+	e := &Error{Kind: KindProvider, Status: 502, Detail: fmt.Sprintf("vendor status/code %d", status)}
+	switch status {
+	case 401, 403:
+		e.Code = "SOURCE_AUTH_FAILED"
+	case 429:
+		e.Code = "SOURCE_RATE_LIMITED"
+	}
+	e.RetryAfter = sourcehttp.ParseRetryAfter(retry, time.Now())
+	return e
+}
+
+func sourceRequestError(ctx context.Context, err error) *Error {
+	var ferr *sourcehttp.Error
+	if errors.As(err, &ferr) {
+		kind := KindNetwork
+		if ferr.Code == "SOURCE_FORMAT_ERROR" || ferr.Code == "SOURCE_RESPONSE_TOO_LARGE" || ferr.Code == "SOURCE_INVALID_URL" {
+			kind = KindFormat
+		}
+		return &Error{Kind: kind, Code: ferr.Code, Status: ferr.Status, RetryAfter: ferr.RetryAfter, Detail: ferr.Detail}
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return &Error{Kind: KindNetwork, Status: 504, Code: "SOURCE_TIMEOUT", Detail: "provider request timed out"}
+	}
+	if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+		return &Error{Kind: KindNetwork, Status: 499, Code: "REQUEST_CANCELED", Detail: "provider request was cancelled"}
+	}
+	return &Error{Kind: KindNetwork, Status: 503, Code: "SOURCE_UNAVAILABLE", Detail: "vendor request failed"}
 }
 
 func transportFor(protocol string) (domain.Transport, error) {
@@ -200,49 +261,28 @@ func parseEntry(transport domain.Transport, raw string, allowPrivate bool) (Entr
 	}
 	idx := strings.LastIndex(raw, ":")
 	if idx <= 0 || idx == len(raw)-1 {
-		return Entry{}, fmt.Errorf("entry %q is not host:port", raw)
+		return Entry{}, fmt.Errorf("entry is not host:port")
 	}
 	host, portStr := raw[:idx], raw[idx+1:]
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port < 1 || port > 65535 {
-		return Entry{}, fmt.Errorf("invalid port %q", portStr)
+		return Entry{}, fmt.Errorf("invalid port")
 	}
 	if strings.HasPrefix(host, "[") {
 		if !strings.HasSuffix(host, "]") {
-			return Entry{}, fmt.Errorf("unbalanced IPv6 brackets in %q", raw)
+			return Entry{}, fmt.Errorf("unbalanced IPv6 brackets")
 		}
 		host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
 	} else if strings.Contains(host, ":") {
 		// A bare IPv6 literal is indistinguishable from host:port in the
 		// vendor's colon-delimited format, so it cannot be accepted safely.
-		return Entry{}, fmt.Errorf("ambiguous IPv6 entry %q", raw)
+		return Entry{}, fmt.Errorf("ambiguous IPv6 entry")
 	}
-	host = strings.ToLower(host)
-	if ip, err := netip.ParseAddr(host); err == nil {
-		if !domain.AddrAllowed(ip, allowPrivate) {
-			return Entry{}, fmt.Errorf("address %s rejected by address policy", host)
-		}
-	} else if !validHostname(host) {
-		return Entry{}, fmt.Errorf("invalid host %q", host)
+	host, err = custom.NormalizeHost(host, allowPrivate)
+	if err != nil {
+		return Entry{}, err
 	}
 	return Entry{Transport: transport, Host: host, Port: port}, nil
-}
-
-func validHostname(host string) bool {
-	if len(host) == 0 || len(host) > 253 {
-		return false
-	}
-	for _, label := range strings.Split(host, ".") {
-		if label == "" || len(label) > 63 {
-			return false
-		}
-		for _, r := range label {
-			if !('a' <= r && r <= 'z' || '0' <= r && r <= '9' || r == '-' && label[0] != '-' && label[len(label)-1] != '-') {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 func isASCIILetters(s string) bool {

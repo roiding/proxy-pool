@@ -74,8 +74,14 @@ func TestAdapterDescriptorsClosedRegistry(t *testing.T) {
 		}
 		seen[d.ID] = true
 	}
-	if len(descs) != 4 {
-		t.Fatalf("registry must be exactly the four code-owned adapters, got %d", len(descs))
+	want := map[string]string{AdapterCustom: "custom", AdapterProvider: "provider", AdapterSite: "site", AdapterStatic: "static", AdapterAccount: "account"}
+	if len(descs) != len(want) {
+		t.Fatalf("registry must be exactly the five code-owned adapters, got %d", len(descs))
+	}
+	for _, d := range descs {
+		if key, ok := want[d.ID]; !ok || d.ConfigKey != key {
+			t.Fatalf("unexpected adapter contract: %+v", d)
+		}
 	}
 }
 

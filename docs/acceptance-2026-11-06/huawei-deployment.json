@@ -1,0 +1,134 @@
+{
+  "release": "supplywait-20261106-8e23869c8d2b",
+  "observed_at": "2026-11-06T12:17:21.539064+00:00",
+  "backup": "/opt/proxy-pool/backups/supply-wait-upload-20261106T112640Z",
+  "container_status": "running",
+  "health": "starting",
+  "restarts": 0,
+  "version": "supplywait-20261106-8e23869c8d2b (8e23869c8d2b)",
+  "configuration_unchanged": true,
+  "geoip_unchanged": true,
+  "source_configurations_unchanged": true,
+  "targets": {
+    "default": 100
+  },
+  "leases_preserved": 19,
+  "quick_check": [
+    "ok"
+  ],
+  "foreign_key_errors": [],
+  "anonymous_admin_status": 401,
+  "upload_controls_present": true,
+  "jobs": [
+    {
+      "job_id": "warm_37d09b6b9f26299d4c589cbc",
+      "kind": "prewarm",
+      "automatic": true,
+      "state": "RUNNING",
+      "target": 100,
+      "ready": 0,
+      "probed": 0,
+      "stop_reason": "",
+      "created_at": "2026-11-06T12:17:19.569965863Z"
+    },
+    {
+      "job_id": "warm_a6a8416d7d87e51dedd63cfc",
+      "kind": "prewarm",
+      "automatic": true,
+      "state": "CANCELLED",
+      "target": 100,
+      "ready": 0,
+      "probed": 0,
+      "stop_reason": "cancelled",
+      "created_at": "2026-11-06T12:14:47.86121271Z"
+    },
+    {
+      "job_id": "warm_c399dca658c1defdf8342ca9",
+      "kind": "prewarm",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 35,
+      "probed": 0,
+      "stop_reason": "inventory_exhausted",
+      "created_at": "2026-11-06T11:20:12.669616271Z"
+    },
+    {
+      "job_id": "warm_d0f3403935ad7d7416dfd368",
+      "kind": "prewarm",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 35,
+      "probed": 0,
+      "stop_reason": "inventory_exhausted",
+      "created_at": "2026-11-06T11:19:37.673835275Z"
+    },
+    {
+      "job_id": "warm_9adb9677608e2b83c4af2904",
+      "kind": "prewarm",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 35,
+      "probed": 0,
+      "stop_reason": "inventory_exhausted",
+      "created_at": "2026-11-06T11:19:02.664935402Z"
+    },
+    {
+      "job_id": "warm_21392ff6132bd0a9b17e7972",
+      "kind": "prewarm",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 35,
+      "probed": 0,
+      "stop_reason": "inventory_exhausted",
+      "created_at": "2026-11-06T11:18:27.666631258Z"
+    },
+    {
+      "job_id": "warm_051a6599a11d4d38df2d551e",
+      "kind": "prewarm",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 35,
+      "probed": 0,
+      "stop_reason": "inventory_exhausted",
+      "created_at": "2026-11-06T11:17:52.666325613Z"
+    },
+    {
+      "job_id": "warm_8b739ae9a22bd8b631d6877d",
+      "kind": "prewarm",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 35,
+      "probed": 0,
+      "stop_reason": "inventory_exhausted",
+      "created_at": "2026-11-06T11:17:17.673347064Z"
+    },
+    {
+      "job_id": "warm_70c065b8f31a820368e108d8",
+      "kind": "prewarm",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 35,
+      "probed": 0,
+      "stop_reason": "inventory_exhausted",
+      "created_at": "2026-11-06T11:16:42.664714155Z"
+    },
+    {
+      "job_id": "warm_fda41d7fcb233d4c8d80f773",
+      "kind": "prewarm",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 35,
+      "probed": 0,
+      "stop_reason": "inventory_exhausted",
+      "created_at": "2026-11-06T11:16:07.673739096Z"
+    }
+  ]
+}

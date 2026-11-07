@@ -75,6 +75,7 @@ td.num, th.num { text-align: right; font-family: var(--mono); }
 tbody tr.click { cursor: pointer; }
 tbody tr.click:hover { background: #f3efe5; }
 tbody tr.selected { background: #e7efe9; }
+tbody tr.group-row td { background: #f3efe5; color: var(--dim); font-weight: 600; padding-top: 10px; }
 .mono { font-family: var(--mono); font-size: 12px; }
 .ok { color: var(--accent); } .bad { color: var(--bad); } .warn { color: var(--warn); } .muted { color: var(--dim); }
 .badge {
@@ -111,6 +112,20 @@ pre.json {
 .clearrow { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 12px; color: var(--dim); }
 .clearrow input { width: auto; }
 .tokenbox { background: #efe9dd; border: 1px solid var(--warn); border-radius: 8px; padding: 10px; font-family: var(--mono); word-break: break-all; }
+details.fold { margin-top: 10px; border-top: 1px solid var(--edge); padding-top: 8px; }
+details.fold > summary { cursor: pointer; color: var(--dim); font-size: 12px; user-select: none; }
+.field-hint { color: var(--dim); font-size: 11px; margin-top: 3px; }
+.upload-panel { border-color: var(--accent); box-shadow: inset 4px 0 0 var(--accent); }
+.upload-zone { background: #fbf8f1; border: 1px solid var(--edge); border-radius: 8px; padding: 12px; }
+.upload-zone h3 { font-size: 13px; margin: 0 0 6px; letter-spacing: .04em; }
+.upload-zone input[type=file] {
+  width: 100%; padding: 9px; background: var(--panel); border: 1px dashed var(--edge-strong);
+  border-radius: 6px; cursor: pointer;
+}
+.upload-zone input[type=file]:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.import-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.import-errors { margin: 6px 0 0; padding-left: 20px; color: var(--bad); }
+.import-errors li { margin: 2px 0; }
 </style>
 </head>
 <body>
@@ -315,7 +330,7 @@ function refreshCurrent() {
 async function renderOverview() {
   const root = $("view-overview");
   root.textContent = "";
-  root.append(el("p", { class: "hint", text: "实时取号表现、验证状态与最近任务。所有数字来自当前数据库统计，不包含估算。" }));
+  root.append(el("p", { class: "hint", text: "实时取号表现、验证状态与最近任务。上传库存与网络缓存分开统计；网络通过数是已验活记录，不是上传资源数。" }));
   const statsPanel = el("div", { class: "panel" }, el("h2", { text: "池子状态" }));
   const statsBox = el("div", { class: "stats", text: "加载中…" });
   statsPanel.append(statsBox);
@@ -327,11 +342,15 @@ async function renderOverview() {
   jobsPanel.append(jobsBox);
   root.append(statsPanel, el("div", { class: "grid2" }, valPanel, jobsPanel));
   const stats = await api("/api/v1/admin/stats");
+  const channels = await api("/api/v1/admin/sources");
+  const networkPassed = channels.reduce((n, s) => n + (s.cache?.fresh ? (s.cache.verified || 0) : 0), 0);
+  const networkBlocked = channels.reduce((n, s) => n + (s.cache?.fresh ? (s.cache.blacklisted || 0) : 0), 0);
   statsBox.textContent = "";
   for (const [k, v] of [
-    ["渠道", stats.sources], ["资源", stats.resources], ["有效供给", stats.enabled_offers],
+    ["渠道实例", stats.sources], ["上传资源", stats.resources], ["启用上传库存", stats.enabled_offers],
+    ["网络已通过（按渠道计）", networkPassed], ["网络黑名单（按渠道计）", networkBlocked],
     ["活跃租约", stats.active_leases], ["进行中预约", stats.active_reservations],
-    ["健康通过", stats.health_pass], ["健康失败", stats.health_fail],
+    ["验活通过次数", stats.attempt_pass ?? 0], ["验活失败次数", stats.attempt_fail ?? 0],
   ]) {
     statsBox.append(el("div", { class: "stat" },
       el("div", { class: "v", text: String(v) }), el("div", { class: "k", text: k })));
@@ -346,16 +365,16 @@ async function renderOverview() {
     valBox.append(el("div", { class: "muted", text: "尚未运行验证（每晚自动一次，也可在渠道详情手动触发）" }));
   }
   valBox.append(el("div", { class: "muted", text: "探测 " + (val.probed ?? 0) + " · 清理 " + (val.retired ?? 0) }));
-  const jobs = await api("/api/v1/admin/jobs?limit=8");
+  const jobs = (await api("/api/v1/admin/jobs?limit=8")) || [];
   jobsBox.textContent = "";
-  const jt = table([{ label: "任务" }, { label: "项目" }, { label: "状态" }, { label: "达标/目标" }, { label: "更新" }]);
+  const jt = table([{ label: "任务" }, { label: "项目" }, { label: "状态" }, { label: "验活结果" }, { label: "更新" }]);
   if (!jobs.length) jt.body.append(el("tr", {}, el("td", { colspan: "5", class: "muted", text: "暂无任务" })));
   for (const j of jobs) {
     jt.body.append(el("tr", {},
-      el("td", { class: "mono", text: j.job_id }),
+      el("td", {}, el("div", { text: jobKindLabel(j) }), el("div", { class: "mono muted", text: j.job_id })),
       el("td", { class: "mono", text: j.project_id }),
       el("td", {}, jobBadge(j.state)),
-      el("td", { class: "num", text: j.ready + "/" + j.target }),
+      el("td", { class: "num", text: jobProgressText(j) }),
       el("td", { text: fmtTime(j.updated_at) })));
   }
   jobsBox.append(jt);
@@ -376,16 +395,734 @@ async function renderOverview() {
 
 /* ---------- 渠道 ---------- */
 
-const sourceState = { list: [], adapters: [], selected: null, detail: null, requestSeq: 0 };
+const sourceState = { list: [], adapters: [], templates: [], selected: null, detail: null, requestSeq: 0 };
+const LIST_ADAPTERS = new Set(["site_fetch", "static_url", "account_list", "provider_api"]);
+const ADAPTER_LABELS = {
+  custom: "上传代理列表", provider_api: "品牌 API 渠道", site_fetch: "站点列表",
+  static_url: "通用静态列表", account_list: "账号列表",
+};
+const COUNTRY_CHOICES = [
+  ["", "全球 / 不限"], ["CN", "中国"], ["US", "美国"], ["GB", "英国"], ["DE", "德国"], ["JP", "日本"],
+  ["SG", "新加坡"], ["HK", "中国香港"], ["TW", "中国台湾"], ["KR", "韩国"], ["CA", "加拿大"],
+  ["AU", "澳大利亚"], ["FR", "法国"], ["NL", "荷兰"], ["IN", "印度"], ["BR", "巴西"],
+];
+let channelFieldSeq = 0;
+const channelStateText = (state) => ({ active: "可适配，待实测", paused: "暂停", awaiting_protocol: "待协议核验",
+  awaiting_contract: "待厂商契约", awaiting_credentials: "待账号配置", incompatible: "TLS 契约不兼容", retired: "旧入口退役" }[state] || state || "未知");
 
-async function renderSources() {
+function cloneObject(value) {
+  try { return JSON.parse(JSON.stringify(value && typeof value === "object" ? value : {})); }
+  catch (_) { return {}; }
+}
+
+function ensureOption(select, value, label) {
+  if (![...select.options].some((option) => option.value === value)) {
+    select.append(el("option", { value, text: label || value }));
+  }
+}
+
+function field(labelText, control, hintText) {
+  if (!control.id) control.id = "channel-field-" + (++channelFieldSeq);
+  const box = el("div", {}, el("label", { text: labelText, for: control.id }), control);
+  if (hintText) box.append(el("div", { class: "field-hint", text: hintText }));
+  return box;
+}
+
+function sourceCacheText(source) {
+  if (!LIST_ADAPTERS.has(source.adapter_type)) return "上传 " + String(source.enabled_offers ?? 0);
+  const cache = source.cache || {};
+  return String(cache.candidates ?? 0) + " / " + String(cache.verified ?? 0) + " / " + String(cache.blacklisted ?? 0);
+}
+
+const IMPORT_MAX_BYTES = 8 << 20;
+const IMPORT_MAX_ITEMS = 10000;
+let sourceImportSeq = 0;
+
+function nextUploadSourceID(sources) {
+  const used = new Set((sources || []).map((source) => source.source_id));
+  const base = "my-proxies";
+  if (!used.has(base)) return base;
+  for (let suffix = 2; suffix < 10000; suffix++) {
+    const candidate = base + "-" + suffix;
+    if (!used.has(candidate)) return candidate;
+  }
+  return "my-proxies-" + Date.now().toString(36);
+}
+
+function uploadContentType(fileName, content) {
+  const name = String(fileName || "").toLowerCase();
+  if (name.endsWith(".json")) return "application/json";
+  if (name.endsWith(".txt")) return "text/plain";
+  return String(content || "").trimStart().startsWith("{") ? "application/json" : "text/plain";
+}
+
+function importItemCount(contentType, content) {
+  if (contentType === "application/json") {
+    try {
+      const body = JSON.parse(content);
+      return Array.isArray(body?.items) ? body.items.length : 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+  return String(content || "").split(/\r?\n/).reduce((count, line) => {
+    const value = line.trim();
+    return count + (value && !value.startsWith("#") ? 1 : 0);
+  }, 0);
+}
+
+function importErrorItems(container, errors, contentType) {
+  container.textContent = "";
+  const list = Array.isArray(errors) ? errors : [];
+  if (!list.length) return;
+  const shown = list.slice(0, 5);
+  const items = shown.map((item) => {
+    const position = Number(item.index ?? item.line);
+    const unit = contentType === "text/plain" ? " 行" : " 项";
+    const where = Number.isInteger(position) && position > 0 ? "第 " + position + unit : "某项";
+    return el("li", { text: where + "：" + String(item.error || "无法解析") });
+  });
+  if (list.length > shown.length) {
+    items.push(el("li", { text: "另有 " + (list.length - shown.length) + " 条错误未展开" }));
+  }
+  container.append(el("ul", { class: "import-errors" }, ...items));
+}
+
+function buildSourceImporter(options = {}) {
+  const uid = "source-import-" + (++sourceImportSeq);
+  const fixedSourceID = options.fixedSourceID || "";
+  const title = options.title || "上传自己的资源";
+  const description = options.description ||
+    "选择 TXT 列表或 JSON 文件，也可以直接粘贴；导入会追加合并库存，不覆盖已有资源。";
+  const targetSelect = el("select", { id: uid + "-target", "aria-describedby": uid + "-target-hint" });
+  const targetHint = el("div", { class: "field-hint", id: uid + "-target-hint",
+    text: "只显示可导入的上传渠道；已停用的上传渠道需先在详情启用。" });
+  const targetBox = el("div", {}, el("label", { for: targetSelect.id, text: "上传到" }),
+    targetSelect, targetHint);
+  const newID = el("input", { type: "text", id: uid + "-new-id", spellcheck: "false",
+    autocomplete: "off", "aria-describedby": uid + "-new-id-hint" });
+  const newIDHint = el("div", { class: "field-hint", id: uid + "-new-id-hint",
+    text: "使用小写字母、数字、下划线或短横线；创建后立即启用并导入。" });
+  const newBox = el("div", {}, el("label", { for: newID.id, text: "新上传渠道 ID" }),
+    newID, newIDHint);
+  const fileInput = el("input", { type: "file", id: uid + "-file",
+    accept: ".txt,.json,text/plain,application/json", "aria-describedby": uid + "-file-hint" });
+  const fileHint = el("div", { class: "field-hint", id: uid + "-file-hint",
+    text: "支持 .txt（每行一个代理）和 .json；单个文件最大 8 MiB、最多 10000 条。选择后会读入下方文本框，可先核对再导入。" });
+  const textArea = el("textarea", { id: uid + "-text", spellcheck: "false",
+    "aria-describedby": uid + "-text-hint",
+    placeholder: "http://user:pass@1.2.3.4:8080\nsocks5://5.6.7.8:1080\n\n也可粘贴 {\"items\": [...]} 格式的 JSON" });
+  const textHint = el("div", { class: "field-hint", id: uid + "-text-hint",
+    text: "可粘贴代理 URI 列表或 JSON；空行及以 # 开头的行会忽略。" });
+  const submitBtn = el("button", { class: "btn primary", type: "button" });
+  const clearBtn = el("button", { class: "btn", type: "button", text: "清空输入" });
+  const msg = el("div", { class: "msg", role: "status", "aria-live": "polite" });
+  const errorBox = el("div");
+  const fileStatus = el("div", { class: "field-hint", "aria-live": "polite" });
+  const actions = el("div", { class: "import-actions" }, submitBtn, clearBtn);
+  const node = el("div", { class: "upload-zone" },
+    el("h3", { text: title }),
+    el("p", { class: "notice", text: description }),
+    fixedSourceID ? null : targetBox,
+    fixedSourceID ? null : newBox,
+    el("label", { for: fileInput.id, text: "从本地选择文件" }),
+    fileInput, fileHint, fileStatus,
+    el("label", { for: textArea.id, text: fixedSourceID ? "或粘贴代理列表 / JSON" : "或直接粘贴代理列表 / JSON" }),
+    textArea, textHint, actions, msg, errorBox);
+
+  let contentType = "text/plain";
+  let fileName = "";
+  let suggestedID = "";
+  let busy = false;
+  let reading = false;
+  let fileReadSeq = 0;
+  let fixedEnabled = !fixedSourceID;
+
+  function syncControls() {
+    submitBtn.disabled = busy || reading || !fixedEnabled;
+    clearBtn.disabled = busy || reading;
+    fileInput.disabled = busy;
+    textArea.disabled = busy;
+    targetSelect.disabled = busy || !!fixedSourceID;
+    newID.disabled = busy || !!fixedSourceID;
+    syncActionLabel();
+  }
+
+  function setBusy(value) {
+    busy = value;
+    syncControls();
+  }
+
+  function setReading(value) {
+    reading = value;
+    syncControls();
+  }
+
+  function syncActionLabel() {
+    const creating = !fixedSourceID && targetSelect.value === "__new__";
+    submitBtn.textContent = busy ? "导入中…" : (reading ? "读取文件中…" : (creating ? "创建并导入" : "追加导入"));
+  }
+
+  function updateTargetBox() {
+    if (fixedSourceID) return;
+    const creating = targetSelect.value === "__new__";
+    newBox.hidden = !creating;
+    syncActionLabel();
+  }
+
+  function refreshTargets(sources, preferredID) {
+    if (fixedSourceID) return;
+    const previous = preferredID || targetSelect.value;
+    const currentDraft = newID.value.trim();
+    const previousSuggestion = suggestedID;
+    const all = Array.isArray(sources) ? sources : [];
+    const customs = all.filter((source) => source.adapter_type === "custom");
+    const enabledCustoms = customs.filter((source) => source.enabled);
+    targetSelect.textContent = "";
+    targetSelect.append(el("option", { value: "__new__", text: "新建上传渠道并导入" }));
+    for (const source of enabledCustoms) {
+      targetSelect.append(el("option", { value: source.source_id,
+        text: "追加到 " + source.source_id + "（" + String(source.enabled_offers ?? 0) + " 条启用库存）" }));
+    }
+    for (const source of customs.filter((item) => !item.enabled)) {
+      targetSelect.append(el("option", { value: source.source_id, disabled: "",
+        text: source.source_id + "（已停用，先在详情启用）" }));
+    }
+    const selectable = new Set(["__new__", ...enabledCustoms.map((source) => source.source_id)]);
+    targetSelect.value = selectable.has(previous) ? previous : "__new__";
+    if (newID.value.trim() === previousSuggestion || !currentDraft) {
+      suggestedID = nextUploadSourceID(all);
+      newID.value = suggestedID;
+    }
+    fixedEnabled = true;
+    updateTargetBox();
+    setBusy(busy);
+  }
+
+  function resetInput() {
+    fileReadSeq++;
+    reading = false;
+    textArea.value = "";
+    fileInput.value = "";
+    fileName = "";
+    contentType = "text/plain";
+    fileStatus.textContent = "";
+    errorBox.textContent = "";
+    syncControls();
+  }
+
+  function validateContent() {
+    const content = textArea.value;
+    if (!content.trim()) return { error: "请选择文件或粘贴代理列表" };
+    if (new Blob([content]).size > IMPORT_MAX_BYTES) return { error: "内容超过 8 MiB，请拆分后分批导入" };
+    contentType = uploadContentType(fileName, content);
+    if (importItemCount(contentType, content) > IMPORT_MAX_ITEMS) {
+      return { error: "内容超过 10000 条，请拆分后分批导入" };
+    }
+    return { content, contentType };
+  }
+
+  async function importContent(content, kind, targetID) {
+    setMsg(msg, "导入中…", "info");
+    errorBox.textContent = "";
+    const res = await api("/api/v1/admin/sources/" + encodeURIComponent(targetID) + "/imports", {
+      method: "POST", headers: { "Content-Type": kind }, body: content,
+    });
+    const rejected = Number(res.rejected || 0);
+    const errors = Array.isArray(res.errors) ? res.errors : [];
+    importErrorItems(errorBox, errors, kind);
+    const summary = "导入完成：新增 " + Number(res.added || 0) + "，更新 " + Number(res.updated || 0) +
+      "，重复 " + Number(res.duplicate || 0) + "，拒绝 " + (rejected || errors.length) + "。";
+    if (rejected > 0 || errors.length > 0) {
+      setMsg(msg, summary + " 被拒绝的内容仍在输入框中，可修正后重试。", "warn");
+    } else {
+      setMsg(msg, summary + " 已有库存保持不变。", "good");
+      resetInput();
+    }
+    return res;
+  }
+
+  targetSelect.addEventListener("change", updateTargetBox);
+  newID.addEventListener("input", () => {
+    if (newID.value.trim() !== suggestedID) suggestedID = "";
+  });
+  textArea.addEventListener("input", () => {
+    fileReadSeq++;
+    reading = false;
+    fileName = "";
+    contentType = uploadContentType("", textArea.value);
+    fileInput.value = "";
+    fileStatus.textContent = "";
+    syncControls();
+  });
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    const seq = ++fileReadSeq;
+    if (file.size > IMPORT_MAX_BYTES) {
+      setReading(false);
+      setMsg(msg, "文件超过 8 MiB，请拆分后分批导入。原输入未改动。", "err");
+      return;
+    }
+    setReading(true);
+    fileStatus.textContent = "正在读取 " + file.name + "…";
+    try {
+      const content = await file.text();
+      if (seq !== fileReadSeq) return;
+      textArea.value = content;
+      fileName = file.name;
+      contentType = uploadContentType(file.name, content);
+      fileStatus.textContent = "已读取 " + file.name + "（" + Math.ceil(file.size / 1024) + " KiB）";
+      errorBox.textContent = "";
+      setMsg(msg, "文件内容已读入文本框，请核对后导入。", "info");
+    } catch (err) {
+      if (seq !== fileReadSeq) return;
+      fileName = "";
+      fileStatus.textContent = "";
+      setMsg(msg, "读取文件失败：" + err.message + "。原输入未改动。", "err");
+    } finally {
+      if (seq === fileReadSeq) setReading(false);
+    }
+  });
+  clearBtn.addEventListener("click", () => {
+    if (busy) return;
+    resetInput();
+    setMsg(msg, "", "");
+  });
+  submitBtn.addEventListener("click", async () => {
+    if (busy) return;
+    const checked = validateContent();
+    if (checked.error) { setMsg(msg, checked.error, "err"); return; }
+    const creating = !fixedSourceID && targetSelect.value === "__new__";
+    const id = fixedSourceID || (creating ? newID.value.trim() : targetSelect.value);
+    if (!creating && !sourceState.list.some((source) =>
+      source.source_id === id && source.adapter_type === "custom" && source.enabled)) {
+      setMsg(msg, "所选上传渠道当前不可用，请刷新后重试。原输入已保留。", "err");
+      return;
+    }
+    if (creating) {
+      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(id)) {
+        setMsg(msg, "渠道 ID 需使用小写字母、数字、下划线或短横线，且以字母或数字开头。", "err");
+        return;
+      }
+      const occupied = sourceState.list.find((source) => source.source_id === id);
+      if (occupied) {
+        setMsg(msg, "渠道 ID “" + id + "” 已被现有" +
+          (occupied.adapter_type === "custom" ? "上传渠道" : "渠道") +
+          "使用，请换一个 ID，或选择上方已有上传渠道。", "err");
+        return;
+      }
+    }
+    setBusy(true);
+    let createdID = "";
+    try {
+      if (creating) {
+        setMsg(msg, "正在创建上传渠道…", "info");
+        await api("/api/v1/admin/sources", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ source_id: id, adapter_type: "custom",
+            config: { default_transport: "http" }, enabled: true }),
+        });
+        createdID = id;
+        await renderSources({ refreshDetail: false });
+        refreshTargets(sourceState.list, id);
+      }
+      await importContent(checked.content, checked.contentType, id);
+      await renderSources({ refreshDetail: false });
+      if (createdID) refreshTargets(sourceState.list, createdID);
+    } catch (err) {
+      setMsg(msg, (createdID ? "渠道已创建，但导入失败：" : "导入失败：") +
+        err.message + "。原输入已保留。", "err");
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  if (fixedSourceID) {
+    fixedEnabled = !!(sourceState.list.find((source) =>
+      source.source_id === fixedSourceID && source.adapter_type === "custom" && source.enabled));
+    if (!fixedEnabled) {
+      msg.className = "msg warn";
+      msg.textContent = "该上传渠道已停用，请先在详情启用后导入。";
+    }
+    setBusy(false);
+  } else {
+    refreshTargets(sourceState.list, "__new__");
+  }
+  return { node, refreshTargets };
+}
+
+function sourceUploadPanel() {
+  const importer = buildSourceImporter({
+    title: "上传自己的资源",
+    description: "不用先创建品牌或网络渠道。选择 TXT / JSON 文件或直接粘贴，即可新建上传渠道或追加到已有上传渠道；库存只合并不覆盖。无需上传密钥，管理登录即可导入。",
+  });
+  const panel = el("div", { class: "panel upload-panel" },
+    el("h2", { text: "直接导入代理资源" }),
+    el("p", { class: "notice", text: "上传资源会追加合并到库存，不覆盖已有记录；候选耗尽时等待新资源，缓存更新或上传资源后再继续。" }),
+    importer.node);
+  return { panel, importer };
+}
+
+function siteConfigChoices(currentSiteID) {
+  const choices = new Map();
+  const brand = sourceState.templates.find((template) => templateVariants(template).some((variant) => variant.config?.site?.site_id === currentSiteID));
+  for (const template of brand ? [brand] : sourceState.templates) {
+    for (const variant of templateVariants(template)) {
+      const siteID = variant.config?.site?.site_id;
+      if (!siteID) continue;
+      choices.set(siteID, {
+        value: siteID,
+        label: (template.brand || template.name || template.id) + " · " + (variant.name || variant.id) +
+          "（" + transportText(variant.transports) + "）",
+      });
+    }
+  }
+  return [...choices.values()];
+}
+
+function buildChannelConfigEditor(adapterType, initialConfig) {
+  let currentAdapter = adapterType || "custom";
+  let sourceConfig = cloneObject(initialConfig);
+  const simple = el("div");
+  const advancedBody = el("div");
+  const diagnostics = el("pre", { class: "json" });
+  const root = el("div");
+  let controls = {};
+
+  function configValue() {
+    const cfg = cloneObject(sourceConfig);
+    if (currentAdapter === "provider_api") {
+      cfg.provider = cfg.provider && typeof cfg.provider === "object" ? cfg.provider : {};
+      cfg.provider.vendor_id = cfg.provider.vendor_id || "scdn";
+      cfg.provider.protocol = controls.protocol?.value || "http";
+      const fetchCount = Number(controls.fetchCount?.value || 0);
+      if (fetchCount > 0) cfg.provider.fetch_count = Math.trunc(fetchCount);
+      else delete cfg.provider.fetch_count;
+      const country = String(controls.country?.value || "").trim().toUpperCase();
+      if (country) cfg.provider.country_code = country;
+      else delete cfg.provider.country_code;
+      const intervalSec = Number(controls.intervalSec?.value || 0);
+      if (intervalSec > 0) cfg.provider.min_fetch_interval_ms = Math.trunc(intervalSec * 1000);
+      else delete cfg.provider.min_fetch_interval_ms;
+    } else if (currentAdapter === "site_fetch") {
+      cfg.site = cfg.site && typeof cfg.site === "object" ? cfg.site : {};
+      cfg.site.site_id = controls.siteID?.value || "";
+      const maxPages = Number(controls.maxPages?.value || 0);
+      if (maxPages > 0) cfg.site.max_pages = Math.trunc(maxPages);
+      else delete cfg.site.max_pages;
+    } else if (currentAdapter === "static_url") {
+      cfg.static = cfg.static && typeof cfg.static === "object" ? cfg.static : {};
+      cfg.static.url = String(controls.url?.value || "").trim();
+      cfg.static.default_transport = controls.transport?.value || "http";
+    } else if (currentAdapter === "account_list") {
+      cfg.account = cfg.account && typeof cfg.account === "object" ? cfg.account : {};
+      cfg.account.vendor_id = cfg.account.vendor_id || "webshare";
+      cfg.account.protocol = controls.protocol?.value || "http";
+    } else {
+      cfg.default_transport = controls.transport?.value || "http";
+    }
+
+    if (LIST_ADAPTERS.has(currentAdapter) && controls.maxCandidates) {
+      const maxCandidates = Number(controls.maxCandidates.value || 0);
+      if (maxCandidates > 0) {
+        cfg.refresh = cfg.refresh && typeof cfg.refresh === "object" ? cfg.refresh : { mode: "demand" };
+        cfg.refresh.max_candidates = Math.trunc(maxCandidates);
+      } else if (cfg.refresh && typeof cfg.refresh === "object") {
+        delete cfg.refresh.max_candidates;
+      }
+    }
+
+    const scopeMode = controls.scopeMode?.value || "public";
+    if (scopeMode === "public") {
+      delete cfg.access;
+    } else {
+      cfg.access = cfg.access && typeof cfg.access === "object" ? cfg.access : {};
+      cfg.access.project_ids = scopeMode === "custom"
+        ? [...new Set(String(controls.projectIDs?.value || "").split("\n").map((id) => id.trim()).filter(Boolean))]
+        : [];
+    }
+    return cfg;
+  }
+
+  function validateConfig() {
+    if (currentAdapter === "provider_api") {
+      if (!["http", "https", "socks5"].includes(controls.protocol?.value)) return "请选择支持的代理协议";
+      const count = Number(controls.fetchCount?.value || 0);
+      if (!Number.isInteger(count) || count < 1 || count > 20) return "单次拉取数需为 1–20";
+      const country = String(controls.country?.value || "").trim().toUpperCase();
+      if (country && !/^[A-Z]{2}$/.test(country)) return "国家/地区请填写两位代码，例如 US";
+      const intervalSec = Number(controls.intervalSec?.value || 0);
+      if (!Number.isFinite(intervalSec) || intervalSec < 0 || intervalSec > 86400) return "最短拉取间隔需在 0–86400 秒";
+    }
+    if (currentAdapter === "site_fetch") {
+      if (!controls.siteID?.value) return "请选择站点配置选项";
+      const pages = Number(controls.maxPages?.value || 0);
+      if (!Number.isInteger(pages) || pages < 0 || pages > 20) return "最多页数需为 0–20（0 使用渠道默认）";
+    }
+    if (currentAdapter === "static_url" && !String(controls.url?.value || "").trim()) return "请填写静态列表 URL";
+    if (currentAdapter === "account_list" && !["http", "socks5"].includes(controls.protocol?.value)) {
+      return "协议需为 HTTP 或 SOCKS5";
+    }
+    if (controls.maxCandidates) {
+      const maxCandidates = Number(controls.maxCandidates.value || 0);
+      if (maxCandidates && (!Number.isInteger(maxCandidates) || maxCandidates < 1 || maxCandidates > 1000)) {
+        return "最大缓存条数需为 1–1000";
+      }
+    }
+    if (currentAdapter === "account_list" && controls.scopeMode?.value === "public") {
+      return "账号渠道必须显式选择允许项目，不能设为公开";
+    }
+    return "";
+  }
+
+  function syncDiagnostics() {
+    diagnostics.textContent = JSON.stringify(configValue(), null, 2);
+  }
+
+  function paint(nextAdapter, nextConfig) {
+    currentAdapter = nextAdapter || "custom";
+    sourceConfig = cloneObject(nextConfig);
+    simple.textContent = "";
+    advancedBody.textContent = "";
+    controls = {};
+
+    if (currentAdapter === "provider_api") {
+      const provider = sourceConfig.provider || {};
+      const protocol = el("select", {},
+        el("option", { value: "http", text: "HTTP" }),
+        el("option", { value: "https", text: "HTTP CONNECT" }),
+        el("option", { value: "socks5", text: "SOCKS5" }));
+      ensureOption(protocol, provider.protocol || "http", String(provider.protocol || "http").toUpperCase());
+      protocol.value = provider.protocol || "http";
+      const fetchCount = el("input", { type: "number", min: "1", max: "20", step: "1",
+        value: String(provider.fetch_count || 20) });
+      const countryID = "country-options-" + (++channelFieldSeq);
+      const country = el("input", { type: "text", list: countryID, value: provider.country_code || "",
+        placeholder: "可选，例如 US", autocomplete: "off" });
+      const countryList = el("datalist", { id: countryID },
+        ...COUNTRY_CHOICES.map(([value, label]) => el("option", { value, text: label })));
+      controls.protocol = protocol;
+      controls.fetchCount = fetchCount;
+      controls.country = country;
+      simple.append(
+        field("协议", protocol),
+        field("单次拉取数", fetchCount, "SCDN 上游单次限制 1–20"),
+        field("国家 / 地区（可选）", country, "可输入两位国家代码"), countryList);
+      const intervalSec = el("input", { type: "number", min: "0", max: "86400", step: "1",
+        value: String(Math.round((provider.min_fetch_interval_ms || 0) / 1000)) });
+      controls.intervalSec = intervalSec;
+      advancedBody.append(field("最短拉取间隔（秒，0 = 使用默认）", intervalSec));
+    } else if (currentAdapter === "site_fetch") {
+      const site = sourceConfig.site || {};
+      const siteID = el("select");
+      for (const choice of siteConfigChoices(site.site_id)) siteID.append(el("option", { value: choice.value, text: choice.label }));
+      ensureOption(siteID, site.site_id || "", site.site_id || "请选择站点");
+      siteID.value = site.site_id || "";
+      const maxPages = el("input", { type: "number", min: "0", max: "20", step: "1",
+        value: String(site.max_pages || 0) });
+      controls.siteID = siteID;
+      controls.maxPages = maxPages;
+      simple.append(
+        field("配置选项（品牌 / 站点 / 协议）", siteID),
+        field("最多页数", maxPages, "0 使用渠道默认；上限 20 页"));
+    } else if (currentAdapter === "static_url") {
+      const stat = sourceConfig.static || {};
+      const url = el("input", { type: "text", value: stat.url || "", placeholder: "https://example.com/list.txt", spellcheck: "false" });
+      const transport = el("select", {},
+        el("option", { value: "http", text: "HTTP" }),
+        el("option", { value: "socks5", text: "SOCKS5" }));
+      transport.value = stat.default_transport || "http";
+      controls.url = url;
+      controls.transport = transport;
+      simple.append(field("列表 URL", url), field("默认协议", transport));
+    } else if (currentAdapter === "account_list") {
+      const account = sourceConfig.account || {};
+      const protocol = el("select", {},
+        el("option", { value: "http", text: "HTTP" }),
+        el("option", { value: "socks5", text: "SOCKS5" }));
+      protocol.value = account.protocol || "http";
+      controls.protocol = protocol;
+      simple.append(field("协议", protocol), el("p", { class: "notice",
+        text: "账号 API Key 在下方专用区域加密填写，不会写入渠道配置。" }));
+    } else {
+      const transport = el("select", {},
+        el("option", { value: "http", text: "HTTP" }),
+        el("option", { value: "socks5", text: "SOCKS5" }));
+      transport.value = sourceConfig.default_transport || "http";
+      controls.transport = transport;
+      simple.append(field("默认协议", transport));
+    }
+
+    if (LIST_ADAPTERS.has(currentAdapter)) {
+      const maxCandidates = el("input", { type: "number", min: "1", max: "1000", step: "1",
+        value: String(sourceConfig.refresh?.max_candidates || "") });
+      controls.maxCandidates = maxCandidates;
+      advancedBody.append(field("最大缓存条数", maxCandidates, "留空使用默认上限；范围 1–1000"));
+    }
+
+    const projectIDs = sourceConfig.access?.project_ids;
+    const scopeMode = el("select");
+    if (currentAdapter !== "account_list") {
+      scopeMode.append(el("option", { value: "public", text: "公开（仍受下游项目允许范围限制）" }));
+    }
+    scopeMode.append(
+      el("option", { value: "none", text: "不允许任何项目" }),
+      el("option", { value: "custom", text: "指定项目" }));
+    if (projectIDs == null) scopeMode.value = currentAdapter === "account_list" ? "none" : "public";
+    else if (projectIDs.length === 0) scopeMode.value = "none";
+    else scopeMode.value = "custom";
+    const projectIDBox = el("textarea", { placeholder: "每行一个项目 ID" });
+    projectIDBox.value = Array.isArray(projectIDs) ? projectIDs.join("\n") : "";
+    projectIDBox.disabled = scopeMode.value !== "custom";
+    scopeMode.addEventListener("change", () => { projectIDBox.disabled = scopeMode.value !== "custom"; syncDiagnostics(); });
+    controls.scopeMode = scopeMode;
+    controls.projectIDs = projectIDBox;
+    advancedBody.append(
+      field("允许项目范围", scopeMode, currentAdapter === "account_list"
+        ? "账号渠道必须明确授权项目；空列表表示不授权任何项目。"
+        : "不展开修改时会保留原范围。"),
+      field("指定项目 ID", projectIDBox));
+
+    const fold = el("details", { class: "fold" },
+      el("summary", { text: "高级设置" }), advancedBody);
+    const diag = el("details", { class: "fold" },
+      el("summary", { text: "只读配置诊断（日常无需打开，不含账号 Key）" }), diagnostics);
+    root.textContent = "";
+    root.append(simple, fold, diag);
+    syncDiagnostics();
+  }
+
+  root.addEventListener("input", syncDiagnostics);
+  root.addEventListener("change", syncDiagnostics);
+  paint(currentAdapter, sourceConfig);
+  return {
+    node: root,
+    update: paint,
+    value: configValue,
+    validate: validateConfig,
+  };
+}
+
+function templateVariants(template) {
+  if (Array.isArray(template?.variants)) return template.variants.filter((variant) => variant?.config);
+  if (template?.config) {
+    return [{ id: template.config?.site?.site_id || template.id, name: template.name || template.id,
+      transports: template.transports || [], config: template.config, parser_version: template.parser_version }];
+  }
+  return [];
+}
+
+function uniqueTransports(values) {
+  const out = [];
+  for (const value of values || []) {
+    const transport = String(value || "").trim().toLowerCase();
+    if (transport && !out.includes(transport)) out.push(transport);
+  }
+  return out.sort((a, b) => {
+    const rank = { http: 0, socks5: 1 };
+    return (rank[a] ?? 99) - (rank[b] ?? 99) || a.localeCompare(b);
+  });
+}
+
+function templateTransports(template) {
+  const values = [...(template?.transports || [])];
+  for (const variant of templateVariants(template)) values.push(...(variant.transports || []));
+  return uniqueTransports(values);
+}
+
+function transportText(transports) {
+  return uniqueTransports(transports).map((transport) => transport.toUpperCase()).join(" / ") || "—";
+}
+
+function templateSummary(template) {
+  if (template?.adapter_type === "provider_api") return "品牌 API 渠道，由后台统一维护缓存与验活。";
+  if (template?.adapter_type === "account_list") return "读取已分配代理，账号 Key 独立加密保存。";
+  if (template?.adapter_type === "site_fetch") return "公开站点列表，由后台统一维护缓存。";
+  return "网络渠道，由后台统一维护缓存。";
+}
+
+function adapterForConfig(config) {
+  if (config?.provider) return "provider_api";
+  if (config?.site) return "site_fetch";
+  if (config?.static) return "static_url";
+  if (config?.account) return "account_list";
+  return "custom";
+}
+
+function suggestedSourceID(template, variant) {
+  if (variant?.config?.site) return variant.id;
+  return template.id + "-" + variant.id;
+}
+
+function findTemplateVariant(detail) {
+  const siteID = detail?.config?.site?.site_id;
+  if (siteID) {
+    for (const template of sourceState.templates) {
+      const variant = templateVariants(template).find((item) => item.config?.site?.site_id === siteID);
+      if (variant) return { template, variant };
+    }
+  }
+  const account = detail?.config?.account;
+  if (account?.vendor_id && account?.protocol) {
+    for (const template of sourceState.templates) {
+      const variant = templateVariants(template).find((item) => {
+        const candidate = item.config?.account;
+        return candidate?.vendor_id === account.vendor_id && candidate?.protocol === account.protocol;
+      });
+      if (variant) return { template, variant };
+    }
+  }
+  const provider = detail?.config?.provider;
+  if (provider?.protocol) {
+    for (const template of sourceState.templates) {
+      const variant = templateVariants(template).find((item) => {
+        const candidate = item.config?.provider;
+        return candidate && (candidate.vendor_id || "scdn") === (provider.vendor_id || "scdn") &&
+          candidate.protocol === provider.protocol;
+      });
+      if (variant) return { template, variant };
+    }
+  }
+  for (const template of sourceState.templates) {
+    const variant = templateVariants(template).find((item) =>
+      detail?.source_id === item.id || detail?.source_id === template.id + "-" + item.id);
+    if (variant) return { template, variant };
+  }
+  return null;
+}
+
+function sourceGroup(s) {
+  const id = String(s.channel_id || "").trim() || s.source_id;
+  const name = String(s.channel_name || "").trim() || s.source_id;
+  return { id, name };
+}
+
+function groupedSourceRows() {
+  const groups = new Map();
+  for (const source of sourceState.list) {
+    const identity = sourceGroup(source);
+    if (!groups.has(identity.id)) groups.set(identity.id, { identity, rows: [] });
+    groups.get(identity.id).rows.push(source);
+  }
+  return [...groups.values()]
+    .sort((a, b) => a.identity.name.localeCompare(b.identity.name, "zh-CN"))
+    .flatMap((group) => {
+      const rows = group.rows.sort((a, b) => a.source_id.localeCompare(b.source_id));
+      return rows.map((source) => ({ group: { identity: group.identity, count: rows.length }, source }));
+    });
+}
+
+async function renderSources(options = {}) {
   const root = $("view-sources");
   if (!root.dataset.built) {
     root.textContent = "";
-    root.append(el("p", { class: "hint", text: "渠道实例与其适配器是两回事：适配器能力由代码注册，实例可以多个、可启停。保存配置不会触发抓取。" }));
+    const upload = sourceUploadPanel();
+    root.append(upload.panel,
+      el("p", { class: "hint", text: "自有代理资源可直接从上方文件或文本导入。下方按品牌选择网络渠道并查看已有实例；新建网络渠道后默认停用，可在详情启用。" }));
     const grid = el("div", { class: "grid2" });
-    const left = el("div", { class: "panel" }, el("h2", { text: "渠道实例" }));
-    const srcTable = table([{ label: "ID" }, { label: "适配器" }, { label: "启停" }, { label: "有效供给" }, { label: "熔断" }]);
+    const left = el("div", { class: "panel" }, el("h2", { text: "渠道实例（按品牌分组，source_id 不合并）" }));
+    const srcTable = table([{ label: "ID" }, { label: "类型" }, { label: "启停" }, { label: "缓存 / 通过 / 黑名单" }, { label: "熔断" }]);
     left.append(srcTable);
     const pagerBox = el("div");
     left.append(pagerBox);
@@ -397,20 +1134,47 @@ async function renderSources() {
     right.append(detailPanel, createPanel);
     grid.append(left, right);
     root.dataset.built = "1";
+    root._upload = upload.importer;
     root._table = srcTable;
     root._pager = pager(pagerBox, () => sourceState.list.length);
     root._pager.addEventListener("pagechange", () => paintSourceRows());
     root._detail = detailPanel;
     const uploadKeys = uploadKeysPanel();
     root._ukTable = uploadKeys._table;
-    root.append(grid, uploadKeys);
+    const catalogPanel = el("div", { class: "panel" }, el("h2", { text: "渠道模板（按品牌）" }),
+      el("p", { class: "notice", text: "按品牌查看可创建的渠道与协议；选择模板后会带入常用设置。" }));
+    root._catalog = table([{ label: "品牌" }, { label: "配置选项" }, { label: "协议" }, { label: "说明" }]);
+    catalogPanel.append(root._catalog);
+    root.append(grid, catalogPanel, uploadKeys);
   }
-  const [overviews, adapters] = await Promise.all([
-    api("/api/v1/admin/sources"), api("/api/v1/admin/adapters")]);
+  const [overviews, adapters, catalog] = await Promise.all([
+    api("/api/v1/admin/sources"), api("/api/v1/admin/adapters"), api("/api/v1/admin/channel-templates")]);
   sourceState.list = overviews || [];
   sourceState.adapters = (adapters && adapters.adapters) || [];
-  root._pager.go();
+  sourceState.templates = (catalog && catalog.templates) || [];
+  root._upload.refreshTargets(sourceState.list);
+  root._pager.render();
+  root._catalog.body.textContent = "";
+  if (!sourceState.templates.length) {
+    root._catalog.body.append(el("tr", {}, el("td", { colspan: "4", class: "muted", text: "暂无可构建品牌模板" })));
+  }
+  for (const t of sourceState.templates) {
+    const variants = templateVariants(t);
+    const variantList = el("div", { class: "mono", style: "margin-top:6px" });
+    for (const variant of variants) {
+      variantList.append(el("div", { text: (variant.name || variant.id) + " · " + transportText(variant.transports) }));
+    }
+    const variantCell = el("td", {}, el("details", {},
+      el("summary", { text: variants.length + " 个配置选项" }), variantList));
+    root._catalog.body.append(el("tr", {},
+      el("td", {}, el("div", { text: t.brand || t.name || t.id }),
+        el("div", { class: "mono muted", text: t.id })),
+      variantCell,
+      el("td", { class: "mono", text: transportText(templateTransports(t)) }),
+      el("td", { class: "muted", text: templateSummary(t) })));
+  }
   paintUploadKeys(root._ukTable);
+  if (sourceState.selected && options.refreshDetail !== false) await paintSourceDetail();
 }
 
 function uploadKeysPanel() {
@@ -482,15 +1246,23 @@ function paintSourceRows() {
   const { page, size } = root._pager.page();
   const tbl = root._table;
   tbl.body.textContent = "";
-  const rows = sourceState.list.slice((page - 1) * size, page * size);
+  const rows = groupedSourceRows().slice((page - 1) * size, page * size);
   if (!rows.length) tbl.body.append(el("tr", {}, el("td", { colspan: "5", class: "muted", text: "暂无渠道" })));
-  for (const s of rows) {
+  let groupID = "";
+  for (const { group, source: s } of rows) {
+    if (group.identity.id !== groupID) {
+      groupID = group.identity.id;
+      const label = group.identity.name + " · " + group.count + " 个实例" +
+        (group.identity.id !== group.identity.name ? " · " + group.identity.id : "");
+      tbl.body.append(el("tr", { class: "group-row" },
+        el("td", { colspan: "5", text: label })));
+    }
     const tr = el("tr", { class: "click" + (sourceState.selected === s.source_id ? " selected" : ""),
       onclick: () => selectSource(s.source_id) },
       el("td", { class: "mono", text: s.source_id }),
-      el("td", { text: s.adapter_type }),
+      el("td", { text: ADAPTER_LABELS[s.adapter_type] || s.adapter_type }),
       el("td", {}, el("span", { class: s.enabled ? "ok" : "muted", text: s.enabled ? "启用" : "停用" })),
-      el("td", { class: "num", text: String(s.enabled_offers) }),
+      el("td", { class: "num", text: sourceCacheText(s) }),
       el("td", {}, el("span", { class: s.circuit_state === "OPEN" ? "warn" : "muted", text: s.circuit_state || "CLOSED" })));
     tbl.body.append(tr);
   }
@@ -503,7 +1275,7 @@ async function selectSource(id) {
   await paintSourceDetail("", seq);
 }
 
-async function paintSourceDetail(errText, requestSeq) {
+async function paintSourceDetail(errText, requestSeq, msgKind = "err") {
   const seq = requestSeq === undefined ? ++sourceState.requestSeq : requestSeq;
   const panel = $("view-sources")._detail;
   panel.textContent = "";
@@ -514,7 +1286,7 @@ async function paintSourceDetail(errText, requestSeq) {
   }
   const id = sourceState.selected;
   const msg = el("div", { class: "msg" });
-  if (errText) setMsg(msg, errText, "err");
+  if (errText) setMsg(msg, errText, msgKind);
   let detail;
   try {
     detail = await api("/api/v1/admin/sources/" + encodeURIComponent(id));
@@ -528,31 +1300,48 @@ async function paintSourceDetail(errText, requestSeq) {
   const overview = sourceState.list.find((s) => s.source_id === id) || {};
   panel.append(el("dl", { class: "kv" },
     el("dt", { text: "ID" }), el("dd", { class: "mono", text: detail.source_id }),
-    el("dt", { text: "适配器" }), el("dd", { class: "mono", text: detail.adapter_type + " / " + detail.parser_type }),
-    el("dt", { text: "配置版本" }), el("dd", { class: "mono", text: String(detail.config_version) }),
-    el("dt", { text: "库存/有效" }), el("dd", { class: "mono", text: (overview.offers ?? "—") + " / " + (overview.enabled_offers ?? "—") }),
-    el("dt", { text: "健康通过/失败" }), el("dd", { class: "mono", text: (overview.health_pass ?? "—") + " / " + (overview.health_fail ?? "—") }),
+    el("dt", { text: "渠道类型" }), el("dd", { text: ADAPTER_LABELS[detail.adapter_type] || detail.adapter_type }),
+    el("dt", { text: "本配置验活通过/失败（次数）" }), el("dd", { class: "mono", text: (overview.attempt_pass ?? "—") + " / " + (overview.attempt_fail ?? "—") }),
     el("dt", { text: "最近验活" }), el("dd", { class: "mono", text: fmtTime(overview.last_validated_at) }),
     el("dt", { text: "熔断" }), el("dd", { class: "mono", text: (overview.circuit_state || "CLOSED") +
       (overview.source_cooldown_until ? "（至 " + fmtTime(overview.source_cooldown_until) + "）" : "") })));
-  const cfgLabel = el("label", { text: "配置 JSON（保存以 config_version=" + detail.config_version + " 为基准，冲突时需刷新）" });
-  const cfgBox = el("textarea", { spellcheck: "false" });
-  cfgBox.value = JSON.stringify(detail.config ?? {}, null, 2);
-  const saveBtn = el("button", { class: "btn primary", text: "保存配置", type: "button" });
+  const templateMatch = findTemplateVariant(detail);
+  if (templateMatch) {
+    const { template, variant } = templateMatch;
+    panel.append(el("p", { class: "notice", text:
+      "品牌模板：" + (template.brand || template.name || template.id) + " · " + (variant.name || variant.id) +
+      "（" + transportText(variant.transports) + "）。状态：" + channelStateText(template.state) + "。" }));
+  }
+  if (LIST_ADAPTERS.has(detail.adapter_type)) {
+    const c = overview.cache || {}, f = overview.fetch_state || {};
+    panel.append(el("dl", { class: "kv" },
+      el("dt", { text: "缓存候选 / 已通过 / 黑名单" }), el("dd", { text: (c.candidates ?? 0) + " / " + (c.verified ?? 0) + " / " + (c.blacklisted ?? 0) + (c.fresh ? "（新鲜）" : "（空或过期，不供给）") }),
+      el("dt", { text: "抓取 / 到期" }), el("dd", { text: fmtTime(c.fetched_at) + " / " + fmtTime(c.expires_at) }),
+      el("dt", { text: "最近抓取错误" }), el("dd", { text: f.last_error_code || "—" })));
+    panel.append(el("p", { class: "notice", text: "网络渠道由后台统一维护缓存与验活；通过记录和临时黑名单按渠道展示。" }));
+  }
+  const editor = buildChannelConfigEditor(detail.adapter_type, detail.config);
+  const saveBtn = el("button", { class: "btn", text: "保存设置", type: "button" });
   const enableBtn = el("button", { class: "btn", text: detail.enabled ? "停用渠道" : "启用渠道", type: "button" });
   const delBtn = el("button", { class: "btn danger", text: "删除渠道", type: "button" });
   const actions = el("div", { class: "row", style: "margin-top:10px" });
   actions.append(saveBtn, enableBtn);
-  if (detail.adapter_type === "provider_api" || detail.adapter_type === "site_fetch" || detail.adapter_type === "static_url") {
-    actions.append(el("button", { class: "btn", text: "立即抓取", type: "button",
-      onclick: async () => {
-        setMsg(msg, "抓取中…", "info");
-        try {
-          const res = await api("/api/v1/admin/sources/" + encodeURIComponent(id) + "/fetch", { method: "POST" });
-          setMsg(msg, "抓取完成：" + JSON.stringify(res), "good");
-          refreshCurrent();
-        } catch (err) { setMsg(msg, "抓取失败：" + err.message, "err"); }
-      } }));
+  if (!detail.enabled && templateMatch && templateMatch.template.runnable === false) enableBtn.disabled = true;
+  if (LIST_ADAPTERS.has(detail.adapter_type)) {
+    const prewarmBtn = el("button", { class: "btn primary", text: "补充并验活", type: "button", onclick: async () => {
+      prewarmBtn.disabled = true;
+      setMsg(msg, "提交补充并验活任务…", "info");
+      try {
+        const job = await api("/api/v1/prewarm", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ count: 1, timeout: 30, source_ids: [id], validation: { mode: "basic" } }),
+        });
+        setMsg(msg, "已提交任务 " + job.job_id + "，可在「任务」查看验活结果。", "good");
+      } catch (err) { setMsg(msg, "提交失败：" + err.message, "err"); }
+      finally { prewarmBtn.disabled = !detail.enabled; }
+    }});
+    prewarmBtn.disabled = !detail.enabled;
+    actions.append(prewarmBtn);
   }
   if (detail.adapter_type === "custom") {
     actions.append(el("button", { class: "btn", text: "手动验活", type: "button",
@@ -564,44 +1353,86 @@ async function paintSourceDetail(errText, requestSeq) {
         } catch (err) { setMsg(msg, "验活失败：" + err.message, "err"); }
       } }));
   }
-  actions.append(delBtn);
-  panel.append(cfgLabel, cfgBox, actions, msg);
-  if (detail.adapter_type === "custom") {
-    const importLabel = el("label", { text: "上传代理列表（追加，不覆盖；http:// 或 socks5:// [user:pass@]host:port）" });
-    const importBox = el("textarea", { spellcheck: "false", placeholder: "http://1.2.3.4:8080" });
-    const importBtn = el("button", { class: "btn primary", text: "解析并导入", type: "button" });
-    const importMsg = el("div", { class: "msg" });
-    importBtn.addEventListener("click", async () => {
-      const content = importBox.value;
-      if (!content.trim()) { setMsg(importMsg, "请先粘贴代理列表", "err"); return; }
-      setMsg(importMsg, "导入中…", "info");
+  panel.append(editor.node, actions, msg);
+  if (LIST_ADAPTERS.has(detail.adapter_type)) {
+    const refresh = el("button", { class: "btn", text: "仅刷新缓存", type: "button", onclick: async () => {
+      refresh.disabled = true;
+      setMsg(msg, "提交刷新任务…", "info");
       try {
-        const res = await api("/api/v1/admin/sources/" + encodeURIComponent(id) + "/imports", {
-          method: "POST", headers: { "Content-Type": "text/plain" }, body: content });
-        setMsg(importMsg, "导入完成：新增 " + res.added + "，更新 " + res.updated +
-          "，重复 " + res.duplicate + "，拒绝 " + (res.rejected || 0), "good");
-        importBox.value = "";
-        refreshCurrent();
-      } catch (err) { setMsg(importMsg, "导入失败：" + err.message, "err"); }
+        const job = await api("/api/v1/admin/sources/" + encodeURIComponent(id) + "/refresh", { method: "POST" });
+        setMsg(msg, "已创建刷新任务 " + job.job_id + "，可在「任务」查看。", "good");
+      } catch (err) { setMsg(msg, "刷新失败：" + err.message, "err"); }
+      finally { refresh.disabled = !detail.enabled; }
+    }});
+    refresh.disabled = !detail.enabled;
+    panel.append(el("details", { class: "fold" },
+      el("summary", { text: "高级操作" }),
+      el("div", { style: "margin-top:8px;display:flex;gap:8px;flex-wrap:wrap" }, refresh, delBtn)));
+  } else {
+    panel.append(el("details", { class: "fold" },
+      el("summary", { text: "高级操作" }),
+      el("div", { style: "margin-top:8px;display:flex;gap:8px;flex-wrap:wrap" }, delBtn)));
+  }
+  if (detail.adapter_type === "account_list") {
+    const secretPanel = el("div", { class: "panel", style: "margin-top:14px" }, el("h2", { text: "账号 API Key（加密、只写、不回显）" }));
+    const keyInput = el("input", { type: "password", autocomplete: "new-password", placeholder: "输入新的 Webshare API Key" });
+    const keyInfo = el("p", { class: "notice", text: "读取密钥状态…" });
+    const secretMsg = el("div", { class: "msg" });
+    const rotate = el("button", { class: "btn", type: "button", text: "保存 / 轮换 Key", onclick: async () => {
+      const value = keyInput.value.trim(); keyInput.value = "";
+      if (!value) { setMsg(secretMsg, "请填写新的 Key；清除请用专用按钮。", "err"); return; }
+      rotate.disabled = true;
+      try {
+        await api("/api/v1/admin/sources/" + encodeURIComponent(id) + "/secret", { method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ config_version: detail.config_version, value }) });
+        await renderSources();
+        if (sourceState.selected === id) await paintSourceDetail("Key 已加密更新；旧批次/证据已失效，项目 CD 保留。", undefined, "good");
+      } catch (err) { setMsg(secretMsg, "更新失败（冲突时请刷新）：" + err.message, "err"); }
+      finally { rotate.disabled = false; }
+    }});
+    const clear = el("button", { class: "btn danger", type: "button", text: "清除 Key", onclick: async () => {
+      if (!confirm("清除账号 Key 并失效该源全部缓存？不会清空项目 CD。")) return;
+      keyInput.value = "";
+      try {
+        await api("/api/v1/admin/sources/" + encodeURIComponent(id) + "/secret", { method: "DELETE", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ config_version: detail.config_version }) });
+        await renderSources();
+        if (sourceState.selected === id) await paintSourceDetail("账号 Key 已清除，不会在重启时自动恢复。", undefined, "good");
+      } catch (err) { setMsg(secretMsg, "清除失败：" + err.message, "err"); }
+    }});
+    secretPanel.append(keyInfo, keyInput, el("div", { class: "row", style: "margin-top:8px" }, rotate, clear), secretMsg);
+    panel.append(secretPanel);
+    api("/api/v1/admin/sources/" + encodeURIComponent(id) + "/secret").then((status) => {
+      if (seq !== sourceState.requestSeq || sourceState.selected !== id) return;
+      keyInfo.textContent = (status.configured ? "已配置，密钥版本 " + status.secret_version : "尚未配置") +
+        (status.encryption_ready ? "；部署加密已启用。" : "；请先在部署配置设置 secret_encryption_key（至少 32 字节），绝不能使用明文配置替代。");
+      rotate.disabled = !status.encryption_ready;
+      if (!detail.enabled && !status.configured) enableBtn.disabled = true;
+    }).catch((err) => { keyInfo.textContent = "状态读取失败：" + err.message; });
+  }
+  if (detail.adapter_type === "custom") {
+    const importer = buildSourceImporter({
+      fixedSourceID: id,
+      title: "向此渠道添加资源",
+      description: "选择 TXT / JSON 文件或直接粘贴，追加合并到当前上传渠道，不覆盖已有库存。",
     });
-    panel.append(el("div", { style: "margin-top:14px" }, importLabel, importBox, importBtn, importMsg));
+    panel.append(el("div", { style: "margin-top:14px" }, importer.node));
   }
   saveBtn.addEventListener("click", async () => {
-    let cfg;
-    try { cfg = JSON.parse(cfgBox.value); }
-    catch (e) { setMsg(msg, "配置不是合法 JSON：" + e.message, "err"); return; }
+    const validationError = editor.validate();
+    if (validationError) { setMsg(msg, validationError, "err"); return; }
+    const cfg = editor.value();
     setMsg(msg, "保存中…", "info");
     try {
       await api("/api/v1/admin/sources/" + encodeURIComponent(id), {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config_version: sourceState.detail.config_version, config: cfg }) });
-      setMsg(msg, "已保存。", "good");
-      await paintSourceDetail();
-      renderSources();
+        body: JSON.stringify({ config_version: detail.config_version, config: cfg }) });
+      await renderSources();
+      if (sourceState.selected === id) await paintSourceDetail("已保存。开启项目自动维持后，后台会按新设置补充。", undefined, "good");
     } catch (err) {
       if (err.code === "SOURCE_VERSION_CONFLICT" || err.status === 409) {
         setMsg(msg, "保存冲突：配置已被他人修改（" + err.message + "）。已为你重新加载最新版本，请合并后重试。", "err");
-        await paintSourceDetail();
+        if (sourceState.selected === id) await paintSourceDetail("保存冲突：已重新加载最新版本，请合并后重试。");
       } else setMsg(msg, "保存失败：" + err.message, "err");
     }
   });
@@ -610,11 +1441,10 @@ async function paintSourceDetail(errText, requestSeq) {
     try {
       await api("/api/v1/admin/sources/" + encodeURIComponent(id), {
         method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config_version: sourceState.detail.config_version,
-          enabled: !sourceState.detail.enabled }) });
-      setMsg(msg, "已更新启停状态。", "good");
-      await paintSourceDetail();
-      renderSources();
+        body: JSON.stringify({ config_version: detail.config_version,
+          enabled: !detail.enabled }) });
+      await renderSources();
+      if (sourceState.selected === id) await paintSourceDetail("已更新启停状态；后台会自动维护启用渠道的缓存与验活。", undefined, "good");
     } catch (err) { setMsg(msg, "操作失败：" + err.message, "err"); }
   });
   delBtn.addEventListener("click", async () => {
@@ -631,96 +1461,137 @@ async function paintSourceDetail(errText, requestSeq) {
 
 function buildSourceCreateForm(panel) {
   const msg = el("div", { class: "msg" });
-  const idInput = el("input", { type: "text", placeholder: "小写字母数字，例如 upload-main", spellcheck: "false" });
+  const idInput = el("input", { type: "text", placeholder: "小写渠道 ID，例如 openproxy-http", spellcheck: "false" });
+  const templateSelect = el("select", {}, el("option", { value: "", text: "选择品牌模板" }));
+  const variantSelect = el("select", { disabled: "" });
   const kindSelect = el("select");
-  const kindNote = el("p", { class: "muted", style: "font-size:12px" });
-  const extra = el("div");
-  function paintKind() {
-    extra.textContent = "";
-    const cap = sourceState.adapters.find((a) => a.id === kindSelect.value);
-    kindNote.textContent = cap ? (cap.description + "；能力：" + cap.capabilities.join("、")) : "";
-    const kind = kindSelect.value;
-    if (kind === "provider_api") {
-      const proto = el("select", {},
-        el("option", { value: "http", text: "http" }),
-        el("option", { value: "https", text: "https（CONNECT）" }),
-        el("option", { value: "socks5", text: "socks5" }));
-      proto.dataset.field = "protocol";
-      const count = el("input", { type: "number", value: "20", min: "1", max: "20" });
-      count.dataset.field = "fetch_count";
-      const country = el("input", { type: "text", placeholder: "留空 = 不限" });
-      country.dataset.field = "country_code";
-      const interval = el("input", { type: "number", value: "0", min: "0" });
-      interval.dataset.field = "min_fetch_interval_ms";
-      extra.append(
-        el("label", { text: "协议" }), proto,
-        el("label", { text: "每次拉取数量（1-20）" }), count,
-        el("label", { text: "国家代码（可选，两位）" }), country,
-        el("label", { text: "最小拉取间隔（毫秒，0=适配器默认）" }), interval);
-    } else if (kind === "site_fetch") {
-      const site = el("select");
-      site.dataset.field = "site_id";
-      api("/api/v1/admin/sites").then((catalog) => {
-        for (const s of catalog) site.append(el("option", { value: s.site_id, text: s.site_id + "（" + s.name + "）" }));
-      }).catch(() => {});
-      const pages = el("input", { type: "number", value: "1", min: "1" });
-      pages.dataset.field = "max_pages";
-      extra.append(el("label", { text: "站点" }), site,
-        el("label", { text: "每次抓取页数" }), pages);
-    } else if (kind === "static_url") {
-      const url = el("input", { type: "text", placeholder: "https://example.com/proxies.txt" });
-      url.dataset.field = "url";
-      const transport = el("select", {},
-        el("option", { value: "http", text: "http" }),
-        el("option", { value: "socks5", text: "socks5" }));
-      transport.dataset.field = "default_transport";
-      extra.append(el("label", { text: "列表 URL（http/https）" }), url,
-        el("label", { text: "列表内代理的传输类型" }), transport);
+  const kindNote = el("p", { class: "notice", text: "加载代码注册表与模板…" });
+  const editorHost = el("div");
+  let editor = buildChannelConfigEditor("custom", { default_transport: "http" });
+  editorHost.append(editor.node);
+  let suggestedID = "";
+  const defaults = { custom: { default_transport: "http" }, provider_api: { provider: { vendor_id: "scdn", protocol: "http", fetch_count: 20 } },
+    site_fetch: { site: { site_id: "openproxylist-http", max_pages: 1 }, refresh: { mode: "demand", max_candidates: 1000 } },
+    static_url: { static: { url: "https://example.com/list.txt", default_transport: "http" }, refresh: { mode: "demand", max_candidates: 1000 } },
+    account_list: { account: { vendor_id: "webshare", protocol: "http", mode: "direct", page_size: 100, max_pages: 10 },
+      access: { project_ids: [] }, refresh: { mode: "demand", cache_ttl_ms: 1800000, max_candidates: 1000 } } };
+  function selectedTemplate() {
+    return sourceState.templates.find((template) => template.id === templateSelect.value);
+  }
+  function selectedVariant(template = selectedTemplate()) {
+    return templateVariants(template).find((variant) => variant.id === variantSelect.value);
+  }
+  function updateNote() {
+    const template = selectedTemplate();
+    const variant = selectedVariant(template);
+    if (template && variant) {
+      kindNote.textContent = (template.brand || template.name || template.id) + " · " + (variant.name || variant.id) +
+        "（" + transportText(variant.transports) + "）。状态：" + channelStateText(template.state) + "。";
     } else {
-      extra.append(el("p", { class: "muted", style: "font-size:12px", text: "上传渠道无需配置；创建后使用「上传代理列表」导入。" }));
+      kindNote.textContent = (ADAPTER_LABELS[kindSelect.value] || "渠道") + "。选择品牌和配置选项可快速填入常用设置。";
+    }
+    if (kindSelect.value === "account_list") {
+      kindNote.textContent += " API Key 在创建后的专用区域加密填写，不会写入渠道配置。";
+    } else if (kindSelect.value === "provider_api") {
+      kindNote.textContent += " 后台会统一维护缓存与验活。";
     }
   }
-  kindSelect.addEventListener("change", paintKind);
-  const createBtn = el("button", { class: "btn primary", text: "创建渠道", type: "button" });
-  createBtn.addEventListener("click", async () => {
+  function paintVariants(template) {
+    variantSelect.textContent = "";
+    const variants = templateVariants(template);
+    if (!template) {
+      variantSelect.append(el("option", { value: "", text: "先选择品牌模板" }));
+      variantSelect.disabled = true;
+      updateNote();
+      return;
+    }
+    if (!variants.length) {
+      variantSelect.append(el("option", { value: "", text: "该品牌暂无可用配置" }));
+      variantSelect.disabled = true;
+      updateNote();
+      return;
+    }
+    for (const variant of variants) {
+      variantSelect.append(el("option", { value: variant.id,
+        text: (variant.name || variant.id) + " · " + transportText(variant.transports) }));
+    }
+    variantSelect.disabled = false;
+    variantSelect.value = variants[0].id;
+    applyVariant(template, variants[0]);
+  }
+  function applyVariant(template, variant) {
+    if (!template || !variant) return;
+    const adapter = adapterForConfig(variant.config);
+    const config = cloneObject(variant.config ?? template.config ?? {});
+    if (adapter === "provider_api" && config.provider) config.provider.fetch_count = 20;
+    kindSelect.value = adapter;
+    editor.update(adapter, config);
+    const nextID = suggestedSourceID(template, variant);
+    if (!idInput.value.trim() || idInput.value.trim() === suggestedID) {
+      idInput.value = nextID;
+      suggestedID = nextID;
+    }
+    updateNote();
+  }
+  idInput.addEventListener("input", () => {
+    if (idInput.value.trim() !== suggestedID) suggestedID = "";
+  });
+  kindSelect.addEventListener("change", () => {
+    templateSelect.value = "";
+    paintVariants(null);
+    editor.update(kindSelect.value, defaults[kindSelect.value] || {});
+    updateNote();
+  });
+  templateSelect.addEventListener("change", () => {
+    paintVariants(selectedTemplate());
+  });
+  variantSelect.addEventListener("change", () => {
+    const template = selectedTemplate();
+    applyVariant(template, selectedVariant(template));
+  });
+  const createBtn = el("button", { class: "btn primary", text: "创建渠道", type: "button", onclick: async () => {
     const id = idInput.value.trim();
     if (!id) { setMsg(msg, "请填写渠道 ID", "err"); return; }
-    const kind = kindSelect.value;
-    const fields = {};
-    for (const node of extra.querySelectorAll("[data-field]")) {
-      const key = node.dataset.field;
-      const v = node.value.trim();
-      if (v === "") continue;
-      fields[key] = node.type === "number" ? Number(v) : v;
-    }
-    // The API accepts the typed SourceConfig only. Adapter type selects the
-    // nested key (provider/site/static); this is a form adapter, not a
-    // compatibility layer for the retired flat config shape.
-    const configKey = { provider_api: "provider", site_fetch: "site", static_url: "static" }[kind];
-    const cfg = configKey ? { [configKey]: fields } : {};
-    setMsg(msg, "创建中…", "info");
+    const validationError = editor.validate();
+    if (validationError) { setMsg(msg, validationError, "err"); return; }
+    const config = editor.value();
+    const adapterType = adapterForConfig(config);
+    if (adapterType !== kindSelect.value) { setMsg(msg, "表单配置与渠道类型不一致，请重新选择。", "err"); return; }
+    createBtn.disabled = true;
     try {
-      await api("/api/v1/admin/sources", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source_id: id, adapter_type: kind, config: cfg, enabled: true }) });
-      setMsg(msg, "已创建 " + id + "。", "good");
-      idInput.value = "";
+      await api("/api/v1/admin/sources", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_id: id, adapter_type: adapterType, config, enabled: false }) });
+      setMsg(msg, "", "good");
+      idInput.value = ""; suggestedID = ""; templateSelect.value = ""; paintVariants(null);
       sourceState.selected = id;
-      await renderSources();
-      await paintSourceDetail();
+      await renderSources(); await paintSourceDetail("已创建停用渠道。如需账号 Key，请在详情中填写后启用。", undefined, "good");
     } catch (err) { setMsg(msg, "创建失败：" + err.message, "err"); }
-  });
-  panel.append(
-    el("label", { text: "渠道 ID" }), idInput,
-    el("label", { text: "适配器类型（能力固定，不可改）" }), kindSelect, kindNote,
-    extra, createBtn, msg);
-  api("/api/v1/admin/adapters").then((res) => {
-    sourceState.adapters = res.adapters || [];
-    for (const a of sourceState.adapters) {
-      kindSelect.append(el("option", { value: a.id, text: a.id + "（" + a.kind + "）" }));
+    finally { createBtn.disabled = false; }
+  }});
+  panel.append(el("label", { text: "渠道 ID（每个实例独立 source_id）" }), idInput,
+    el("label", { text: "品牌" }), templateSelect,
+    el("label", { text: "配置选项（协议 / 站点 / 账号）" }), variantSelect,
+    el("label", { text: "渠道类型" }), kindSelect, kindNote,
+    editorHost,
+    el("p", { class: "notice", text: "创建后默认停用，可在详情启用。高级设置通常无需修改；网络渠道由后台统一维护缓存与验活。" }),
+    createBtn, msg);
+  Promise.all([api("/api/v1/admin/adapters"), api("/api/v1/admin/channel-templates")]).then(([registry, catalog]) => {
+    sourceState.adapters = registry.adapters || []; sourceState.templates = catalog.templates || [];
+    for (const adapter of sourceState.adapters) {
+      kindSelect.append(el("option", { value: adapter.id,
+        text: (ADAPTER_LABELS[adapter.id] || adapter.id) + "（" + adapter.id + "）" }));
     }
-    paintKind();
-  });
+    for (const template of sourceState.templates) {
+      const variants = templateVariants(template);
+      if (!variants.length) continue;
+      templateSelect.append(el("option", { value: template.id,
+        text: (template.brand || template.name || template.id) + " · " + variants.length + " 个配置选项" }));
+    }
+    kindSelect.value = "custom";
+    paintVariants(null);
+    editor.update("custom", defaults.custom);
+    updateNote();
+  }).catch((err) => { kindNote.textContent = "模板加载失败：" + err.message; createBtn.disabled = true; });
 }
 
 /* ---------- 本地库存 ---------- */
@@ -728,14 +1599,14 @@ function buildSourceCreateForm(panel) {
 async function renderInventory() {
   const root = $("view-inventory");
   root.textContent = "";
-  root.append(el("p", { class: "hint", text: "持久库存按渠道统计；API 渠道按请求实时拉取、不入池，因此这里不会出现“API 渠道池内数量”。静态列表缓存在抓取时按渠道维护，不在此汇总。" }));
+  root.append(el("p", { class: "hint", text: "上传渠道统计持久库存；网络渠道统计缓存、已通过和黑名单。网络缓存由后台统一维护。" }));
   const overviewPanel = el("div", { class: "panel" }, el("h2", { text: "分渠道库存与验活" }));
-  const tbl = table([{ label: "渠道" }, { label: "适配器" }, { label: "库存" }, { label: "有效" },
-    { label: "通过" }, { label: "失败" }, { label: "最近验活" }, { label: "熔断/冷却" }]);
+  const tbl = table([{ label: "渠道" }, { label: "类型" }, { label: "上传库存" }, { label: "缓存 / 通过 / 黑名单" },
+    { label: "验活通过次数" }, { label: "验活失败次数" }, { label: "最近验活" }, { label: "熔断/冷却" }]);
   overviewPanel.append(tbl);
   const pagerBox = el("div");
   overviewPanel.append(pagerBox, el("p", { class: "notice",
-    text: "“通过/失败”是默认基础验活的近期结果；正式下发获取仍会按请求验活范围重新验证，通过数不等于可立即发放数。" }));
+    text: "“通过/失败”统计当前渠道配置的累计验活次数。当前能否下发仍检查项目权限、请求范围、缓存与配置版本。" }));
   root.append(overviewPanel);
   const list = await api("/api/v1/admin/sources");
   const rows = list || [];
@@ -747,11 +1618,11 @@ async function renderInventory() {
     for (const s of rows.slice((page - 1) * size, page * size)) {
       tbl.body.append(el("tr", {},
         el("td", { class: "mono", text: s.source_id }),
-        el("td", { text: s.adapter_type }),
+        el("td", { text: ADAPTER_LABELS[s.adapter_type] || s.adapter_type }),
         el("td", { class: "num", text: String(s.offers) }),
-        el("td", { class: "num", text: String(s.enabled_offers) }),
-        el("td", { class: "num", text: String(s.health_pass) }),
-        el("td", { class: "num", text: String(s.health_fail) }),
+        el("td", { class: "num", text: LIST_ADAPTERS.has(s.adapter_type) ? sourceCacheText(s) : "—" }),
+        el("td", { class: "num", text: String(s.attempt_pass ?? 0) }),
+        el("td", { class: "num", text: String(s.attempt_fail ?? 0) }),
         el("td", { text: fmtTime(s.last_validated_at) }),
         el("td", {}, el("span", { class: s.circuit_state === "OPEN" ? "warn" : "muted",
           text: s.circuit_state + (s.source_cooldown_until ? " → " + fmtTime(s.source_cooldown_until) : "") }))));
@@ -769,11 +1640,15 @@ async function renderJobs() {
   const root = $("view-jobs");
   if (!root.dataset.built) {
     root.textContent = "";
-    root.append(el("p", { class: "hint", text: "预热是异步任务：只刷新证据与健康，不发放代理、不写项目 CD。可取消；重启后任务标记为 INTERRUPTED，需重新发起。" }));
+    root.append(el("p", { class: "hint", text: "项目开启自动维持后，所有启用且该项目有权使用的网络渠道会共同补足目标。任务页可手动发起补充并验活，结果按渠道记录。" }));
     const createPanel = el("div", { class: "panel" }, el("h2", { text: "发起预热任务" }));
     const subject = el("p", { class: "notice" });
-    const count = el("input", { type: "number", value: "5", min: "1" });
+    const count = el("input", { type: "number", value: "1", min: "1" });
     const timeout = el("input", { type: "number", value: "120", min: "1" });
+    const sourceIDs = el("input", { type: "text", placeholder: "逐渠道验收填一个 source_id；逗号可分隔，留空才使用项目范围" });
+    const mode = el("select", {}, el("option", { value: "basic", text: "basic · 签名 Judge" }), el("option", { value: "tls", text: "tls · 目标端到端 TLS" }));
+    const target = el("input", { type: "text", placeholder: "example.com:443（tls 模式必填）" }); target.disabled = true;
+    mode.addEventListener("change", () => { target.disabled = mode.value !== "tls"; });
     const btn = el("button", { class: "btn primary", text: "创建预热任务", type: "button" });
     const msg = el("div", { class: "msg" });
     btn.addEventListener("click", async () => {
@@ -781,7 +1656,9 @@ async function renderJobs() {
       try {
         const job = await api("/api/v1/prewarm", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ count: Number(count.value), timeout: Number(timeout.value) }) });
+          body: JSON.stringify({ count: Number(count.value), timeout: Number(timeout.value),
+            ...(sourceIDs.value.trim() ? { source_ids: sourceIDs.value.split(",").map((s) => s.trim()).filter(Boolean) } : {}),
+            validation: mode.value === "tls" ? { mode: "tls", target: target.value.trim() } : { mode: "basic" } }) });
         setMsg(msg, "已创建任务 " + job.job_id + "（项目 " + job.project_id + "）。", "good");
         renderJobs();
       } catch (err) { setMsg(msg, "创建失败：" + err.message, "err"); }
@@ -791,6 +1668,9 @@ async function renderJobs() {
       el("div", { class: "row" },
         el("div", {}, el("label", { text: "目标达标数量" }), count),
         el("div", {}, el("label", { text: "任务预算（秒）" }), timeout)),
+      el("label", { text: "限定渠道（留空使用全部）" }), sourceIDs,
+      el("div", { class: "row" }, mode, target),
+      el("p", { class: "notice", text: "自动维持目标在「下游项目」设置，0 表示关闭。手动任务使用当前项目有权使用的渠道，未达标会如实报告短缺。" }),
       btn, msg);
     api("/api/v1/admin/system").then((info) => {
       subject.textContent = "任务主体：当前管理登录所属的默认项目（" + (info.default_project_id || "default") +
@@ -801,7 +1681,7 @@ async function renderJobs() {
     const listPanel = el("div", { class: "panel" }, el("h2", { text: "任务列表" }));
     const projectFilter = el("input", { type: "text", placeholder: "按 project_id 过滤（留空 = 全部）" });
     projectFilter.addEventListener("change", () => loadJobs());
-    const tbl = table([{ label: "任务" }, { label: "项目" }, { label: "状态" }, { label: "达标/目标" },
+    const tbl = table([{ label: "任务 / 类型" }, { label: "项目" }, { label: "状态" }, { label: "验活结果 / 抓取数" },
       { label: "探测/失败" }, { label: "停止原因" }, { label: "更新" }, { label: "操作" }]);
     const pagerBox = el("div");
     listPanel.append(projectFilter, tbl, pagerBox);
@@ -845,12 +1725,12 @@ function paintJobs() {
       } });
     if (!active) cancelBtn.disabled = true;
     tbl.body.append(el("tr", {},
-      el("td", { class: "mono", text: j.job_id }),
+      el("td", {}, el("div", { text: jobKindLabel(j) }), el("div", { class: "mono muted", text: j.job_id })),
       el("td", { class: "mono", text: j.project_id }),
       el("td", {}, jobBadge(j.state)),
-      el("td", { class: "num", text: j.ready + "/" + j.target }),
+      el("td", { class: "num", text: jobProgressText(j) }),
       el("td", { class: "num", text: j.probed + " / " + j.failed }),
-      el("td", { class: "muted", text: j.stop_reason || j.last_error || "—" }),
+      el("td", { class: "muted", text: jobStopReasonText(j) }),
       el("td", { text: fmtTime(j.updated_at) }),
       el("td", {}, cancelBtn)));
   }
@@ -867,7 +1747,7 @@ async function renderProjects() {
     root.append(el("p", { class: "hint", text: "项目是 CD 主体：同一项目多把 Key 共享冷却窗口；删除 Key 不会清空项目 CD。删除项目仅停用并保留冷却与历史。" }));
     const grid = el("div", { class: "grid2" });
     const left = el("div", { class: "panel" }, el("h2", { text: "项目" }));
-    const tbl = table([{ label: "ID" }, { label: "名称" }, { label: "启停" }, { label: "默认CD" }, { label: "版本" }]);
+    const tbl = table([{ label: "ID" }, { label: "名称" }, { label: "启停" }, { label: "自动维持" }, { label: "默认CD" }, { label: "版本" }]);
     const pagerBox = el("div");
     left.append(tbl, pagerBox);
     const right = el("div", {});
@@ -894,13 +1774,14 @@ function paintProjectRows() {
   const tbl = root._tbl;
   tbl.body.textContent = "";
   const rows = projectState.list.slice((page - 1) * size, page * size);
-  if (!rows.length) tbl.body.append(el("tr", {}, el("td", { colspan: "5", class: "muted", text: "暂无项目" })));
+  if (!rows.length) tbl.body.append(el("tr", {}, el("td", { colspan: "6", class: "muted", text: "暂无项目" })));
   for (const p of rows) {
     tbl.body.append(el("tr", { class: "click" + (projectState.selected === p.project_id ? " selected" : ""),
       onclick: () => selectProject(p.project_id) },
       el("td", { class: "mono", text: p.project_id }),
       el("td", { text: p.name }),
       el("td", {}, el("span", { class: p.enabled ? "ok" : "muted", text: p.enabled ? "启用" : "停用" })),
+      el("td", { class: "num", text: String(p.defaults.auto_prewarm_target ?? 0) }),
       el("td", { class: "num", text: (p.defaults.cooldown_ms / 1000) + "s" }),
       el("td", { class: "num", text: String(p.config_version) })));
   }
@@ -918,7 +1799,7 @@ function scopeModeOf(list) {
   return "custom";
 }
 
-async function paintProjectDetail(errText) {
+async function paintProjectDetail(errText, msgKind = "err") {
   const panel = $("view-projects")._detail;
   panel.textContent = "";
   panel.append(el("h2", { text: "项目详情" }));
@@ -928,7 +1809,7 @@ async function paintProjectDetail(errText) {
   }
   const id = projectState.selected;
   const msg = el("div", { class: "msg" });
-  if (errText) setMsg(msg, errText, "err");
+  if (errText) setMsg(msg, errText, msgKind);
   let p;
   try { p = await api("/api/v1/admin/projects/" + encodeURIComponent(id)); }
   catch (err) { panel.append(el("div", { class: "bad", text: "读取失败：" + err.message })); return; }
@@ -942,6 +1823,9 @@ async function paintProjectDetail(errText) {
     el("option", { value: "false", text: "停用", selected: p.enabled ? undefined : "" }));
   const cd = el("input", { type: "number", value: String(p.defaults.cooldown_ms / 1000), min: "0" });
   const timeout = el("input", { type: "number", value: String(p.defaults.timeout_ms / 1000), min: "0" });
+  const autoPrewarmTarget = el("input", { type: "number", min: "0", max: "1000", step: "1",
+    value: String(p.defaults.auto_prewarm_target ?? 0) });
+  const networkReuse = el("input", { type: "number", value: String((p.defaults.network_reuse_cooldown_ms || 1800000) / 1000), min: "0" });
   const valMode = el("select", {},
     el("option", { value: "basic", text: "基础验活（默认）" }),
     el("option", { value: "tls", text: "目标 TLS" }));
@@ -951,18 +1835,24 @@ async function paintProjectDetail(errText) {
   const saveBtn = el("button", { class: "btn primary", text: "保存配置", type: "button" });
   const delBtn = el("button", { class: "btn danger", text: "停用项目", type: "button" });
   saveBtn.addEventListener("click", async () => {
+    const autoTarget = Number(autoPrewarmTarget.value);
+    if (!Number.isInteger(autoTarget) || autoTarget < 0 || autoTarget > 1000) {
+      setMsg(msg, "自动维持可用数量需为 0–1000 的整数", "err");
+      return;
+    }
     const patch = { config_version: p.config_version, name: name.value.trim(),
       enabled: enabled.value === "true",
       cooldown_ms: Number(cd.value) * 1000, timeout_ms: Number(timeout.value) * 1000,
+      network_reuse_cooldown_ms: Number(networkReuse.value) * 1000,
+      auto_prewarm_target: autoTarget,
       validation: { mode: valMode.value } };
     if (valMode.value === "tls") patch.validation.target = valTarget.value.trim();
     setMsg(msg, "保存中…", "info");
     try {
       await api("/api/v1/admin/projects/" + encodeURIComponent(id), {
         method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
-      setMsg(msg, "已保存。", "good");
       await renderProjects();
-      await paintProjectDetail();
+      await paintProjectDetail("已保存。", "good");
     } catch (err) {
       if (err.code === "CONFIG_VERSION_CONFLICT" || err.status === 409) {
         setMsg(msg, "版本冲突：" + err.message + " 已重新加载最新配置，请合并后重试。", "err");
@@ -974,17 +1864,19 @@ async function paintProjectDetail(errText) {
     if (!confirm("停用项目 " + id + "？项目会立即停用，CD 与历史保留，可通过再次启用恢复。")) return;
     try {
       await api("/api/v1/admin/projects/" + encodeURIComponent(id), { method: "DELETE" });
-      setMsg(msg, "项目已停用。", "good");
       await renderProjects();
-      await paintProjectDetail();
+      await paintProjectDetail("项目已停用。", "good");
     } catch (err) { setMsg(msg, "操作失败：" + err.message, "err"); }
   });
   cfgPanel.append(
     el("label", { text: "名称" }), name,
     el("label", { text: "启停" }), enabled,
+    field("自动维持可用数量（0 关闭）", autoPrewarmTarget,
+      "所有启用且本项目有权使用的网络渠道会共同补足目标。"),
     el("div", { class: "row" },
       el("div", {}, el("label", { text: "默认 CD（秒，0 = 不设窗口）" }), cd),
       el("div", {}, el("label", { text: "默认超时（秒）" }), timeout)),
+    el("label", { text: "网络代理黑名单（秒，默认 1800；0 使用默认值；不缩短既有窗口）" }), networkReuse,
     el("label", { text: "默认验活" }), valMode,
     el("label", { text: "TLS 目标" }), valTarget,
     el("div", { style: "margin-top:10px; display:flex; gap:8px; align-items:center" }, saveBtn, delBtn, versionTag));
@@ -1048,8 +1940,7 @@ async function paintProjectDetail(errText) {
     try {
       await api("/api/v1/admin/projects/" + encodeURIComponent(id) + "/sources", {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      setMsg(msg, "来源范围已保存。", "good");
-      await paintProjectDetail();
+      await paintProjectDetail("来源范围已保存。", "good");
     } catch (err) {
       if (err.code === "CONFIG_VERSION_CONFLICT" || err.status === 409) {
         setMsg(msg, "版本冲突：" + err.message + " 请刷新后重试。", "err");
@@ -1072,24 +1963,31 @@ function buildProjectCreateForm(panel) {
   const name = el("input", { type: "text", placeholder: "业务名，例如 stock-data" });
   const cd = el("input", { type: "number", value: "300", min: "0" });
   const timeout = el("input", { type: "number", value: "30", min: "0" });
+  const autoPrewarmTarget = el("input", { type: "number", value: "0", min: "0", max: "1000", step: "1" });
   const btn = el("button", { class: "btn primary", text: "创建项目", type: "button" });
   btn.addEventListener("click", async () => {
     if (!name.value.trim()) { setMsg(msg, "请填写项目名称", "err"); return; }
+    const autoTarget = Number(autoPrewarmTarget.value);
+    if (!Number.isInteger(autoTarget) || autoTarget < 0 || autoTarget > 1000) {
+      setMsg(msg, "自动维持可用数量需为 0–1000 的整数", "err");
+      return;
+    }
     setMsg(msg, "创建中…", "info");
     try {
       const p = await api("/api/v1/admin/projects", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name.value.trim(), cooldown_ms: Number(cd.value) * 1000,
-          timeout_ms: Number(timeout.value) * 1000 }) });
-      setMsg(msg, "已创建 " + p.project_id + "。默认来源范围：不限制。", "good");
+          timeout_ms: Number(timeout.value) * 1000, auto_prewarm_target: autoTarget }) });
       name.value = "";
       projectState.selected = p.project_id;
       await renderProjects();
-      await paintProjectDetail();
+      await paintProjectDetail("已创建 " + p.project_id + "。默认来源范围：不限制。", "good");
     } catch (err) { setMsg(msg, "创建失败：" + err.message, "err"); }
   });
   panel.append(
     el("label", { text: "项目名称" }), name,
+    field("自动维持可用数量（0 关闭）", autoPrewarmTarget,
+      "所有启用且本项目有权使用的网络渠道会共同补足目标。"),
     el("div", { class: "row" },
       el("div", {}, el("label", { text: "默认 CD（秒）" }), cd),
       el("div", {}, el("label", { text: "默认超时（秒）" }), timeout)),
@@ -1271,6 +2169,27 @@ async function renderAlerts() {
       el("td", { class: "muted", text: n.last_error || "—" })));
   }
   usagePanel.append(el("h2", { text: "最近通知", style: "margin-top:14px" }), nt);
+}
+
+function jobProgressText(j) {
+  if (j.kind === "source_refresh") return (j.stop_reason === "cache_reused" ? "复用 " : "拉取 ") + j.ready + " 条缓存（未验活）";
+  const running = j.state === "RUNNING" || j.state === "PENDING";
+  const progress = "本次通过 " + Math.max(0, j.probed - j.failed) + "、失败 " + j.failed +
+    "；" + (running ? "当前" : "结束时") + "待下发 " + j.ready + "/" + j.target;
+  return j.stop_reason === "inventory_exhausted" ? progress + "；候选已耗尽" : progress;
+}
+
+function jobKindLabel(j) {
+  if (j.kind === "source_refresh") return "缓存刷新";
+  if (j.kind === "prewarm") return j.automatic ? "自动补足" : "手动预热";
+  return j.kind;
+}
+
+function jobStopReasonText(j) {
+  if (j.stop_reason === "inventory_exhausted") {
+    return "候选耗尽，等待新资源；缓存更新或上传资源后再继续";
+  }
+  return j.stop_reason || j.last_error || "—";
 }
 
 /* ---------- 系统 ---------- */

@@ -95,7 +95,7 @@ func TestSiteFetchChannelViaAPI(t *testing.T) {
 	if err := json.Unmarshal(data, &first); err != nil {
 		t.Fatalf("decode fetch: %v", err)
 	}
-	if first.Fetched != 3 || first.PagesDone < 2 || first.PagesTotal < 2 {
+	if first.Fetched != 4 || first.PagesDone < 2 || first.PagesTotal < 2 {
 		t.Fatalf("first fetch: %s", data)
 	}
 
@@ -121,17 +121,18 @@ func TestSiteFetchChannelViaAPI(t *testing.T) {
 		Fetched     int    `json:"fetched"`
 		BatchID     string `json:"batch_id"`
 		NotModified bool   `json:"not_modified"`
+		CacheHit    bool   `json:"cache_hit"`
 	}
 	if code != http.StatusOK || json.Unmarshal(data, &second) != nil {
 		t.Fatalf("second fetch status=%d body=%s", code, data)
 	}
-	if !second.NotModified || second.BatchID != batchID || second.Fetched != 3 {
+	if second.NotModified || !second.CacheHit || second.BatchID != batchID || second.Fetched != 4 {
 		t.Fatalf("second fetch must replay the fresh batch without a download: %+v", second)
 	}
 	if vendorHits.Load() != 2 {
 		t.Fatalf("both pages must be fetched exactly once, hits=%d", vendorHits.Load())
 	}
-	// A read path inside the 10-minute cache TTL may keep serving this batch
+	// A read path inside the 30-minute cache TTL may keep serving this batch
 	// even after the 15-second vendor refresh window has elapsed.
 	e.ingest.Now = func() time.Time { return time.Now().Add(20 * time.Second) }
 	if _, fetchBatch, derr := e.ingest.FetchStaticBatch(context.Background(),
@@ -152,23 +153,24 @@ func TestSiteFetchChannelViaAPI(t *testing.T) {
 	if code != http.StatusOK || json.Unmarshal(data, &again) != nil {
 		t.Fatalf("re-fetch status=%d body=%s", code, data)
 	}
-	if again.NotModified || again.Fetched != 3 || again.BatchID == "" ||
-		again.BatchID == batchID {
-		t.Fatalf("manual refresh after the vendor window must download a new batch: %s", data)
+	if again.NotModified || again.Fetched != 4 || again.BatchID == "" ||
+		again.BatchID != batchID {
+		t.Fatalf("manual refresh inside the cache window must reuse the same batch: %s", data)
 	}
-	if vendorHits.Load() != 4 {
-		t.Fatalf("manual refresh must fetch both pages once, hits=%d", vendorHits.Load())
+	if vendorHits.Load() != 2 {
+		t.Fatalf("manual refresh must not repeat the same upstream fetch, hits=%d", vendorHits.Load())
 	}
 	batchID = again.BatchID
 	// Once the cache TTL expires, the read path must also refresh.
-	e.ingest.Now = func() time.Time { return time.Now().Add(11 * time.Minute) }
+	expires := *e.ingest.CacheView("lumiproxy-elite").ExpiresAt
+	e.ingest.Now = func() time.Time { return expires.Add(time.Second) }
 	third, thirdBatch, derr := e.ingest.FetchStaticBatch(context.Background(),
 		"lumiproxy-elite", 0)
 	if derr != nil || len(third) != 3 || thirdBatch == "" || thirdBatch == batchID {
 		t.Fatalf("TTL-expired batch fetch must download a fresh batch: entries=%d batch=%q err=%v",
 			len(third), thirdBatch, derr)
 	}
-	if vendorHits.Load() != 6 {
+	if vendorHits.Load() != 4 {
 		t.Fatalf("TTL-expired batch fetch must download both pages once, hits=%d",
 			vendorHits.Load())
 	}

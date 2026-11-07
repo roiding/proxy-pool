@@ -145,8 +145,13 @@ type SourceRefiller interface {
 // RefillScope narrows a demand refill to the request's transport and
 // country filters; candidates outside the scope are useless work.
 type RefillScope struct {
+	ProjectID  string
 	Transports []domain.Transport
 	Countries  []string
+	// Used only to order candidates. Final probe/evidence and delivery
+	// guards still enforce the exact scope and proof age independently.
+	EvidenceScopeHash string
+	EvidenceNotBefore time.Time
 }
 
 // SourceBatchRefiller is the richer refill surface: scoped fetches plus
@@ -548,7 +553,7 @@ func (s *AcquireService) finalizeDelivery(ctx context.Context, run *acquireRun,
 	run.mu.Lock()
 	run.leases = nil
 	run.mu.Unlock()
-	items := run.usablePreparedItems(count, now, s.cfg.MaxProofAge(), s.fingerprintConn)
+	items := run.usablePreparedItems(count, now, 0, s.fingerprintConn)
 	if len(items) == 0 {
 		return []AcquiredItem{}, nil
 	}
@@ -561,7 +566,7 @@ func (s *AcquireService) finalizeDelivery(ctx context.Context, run *acquireRun,
 func (s *AcquireService) finalizeStickyDelivery(ctx context.Context, run *acquireRun,
 	req AcquireRequest, requestID string, claim domain.StickyBinding,
 	ciphertext string) ([]AcquiredItem, *domain.Error) {
-	items := run.usablePreparedItems(1, s.Now(), s.cfg.MaxProofAge(), s.fingerprintConn)
+	items := run.usablePreparedItems(1, s.Now(), 0, s.fingerprintConn)
 	if len(items) != 1 {
 		return []AcquiredItem{}, nil
 	}
@@ -656,7 +661,36 @@ func (s *AcquireService) commitPrepared(ctx context.Context, run *acquireRun,
 			ExpectedEpoch:    p.failureEpoch,
 			ExpectedEvidence: item.Validation,
 			MinUsable:        time.Duration(req.Lease.MinUsableMS) * time.Millisecond,
+			CacheDeadline:    p.candidate.CacheExpiresAt,
 		})
+	}
+	var deliveryCache StaticEvidenceProvider
+	if evidenceCache, ok := s.Refiller.(StaticEvidenceProvider); ok {
+		staticCandidates := make([]domain.Candidate, 0, len(candidates))
+		proofs := make([]domain.Evidence, 0, len(candidates))
+		for _, c := range candidates {
+			staticCandidates = append(staticCandidates, byFP[c.Fingerprint].candidate)
+			proofs = append(proofs, c.ExpectedEvidence)
+		}
+		hasStatic := false
+		for _, c := range staticCandidates {
+			hasStatic = hasStatic || isStaticCandidate(c)
+		}
+		if hasStatic {
+			release, eligible, err := evidenceCache.LockStaticDelivery(ctx, staticCandidates, proofs, domain.EvidenceScopeHash(*req.Validation))
+			if err != nil {
+				return nil, domain.E("REQUEST_CANCELED", 499, "static delivery guard cancelled")
+			}
+			defer release()
+			deliveryCache = evidenceCache
+			next := candidates[:0]
+			for i, c := range candidates {
+				if !isStaticCandidate(staticCandidates[i]) || eligible[c.Fingerprint] {
+					next = append(next, c)
+				}
+			}
+			candidates = next
+		}
 	}
 	if len(candidates) == 0 {
 		return []AcquiredItem{}, nil
@@ -719,10 +753,17 @@ func (s *AcquireService) commitPrepared(ctx context.Context, run *acquireRun,
 		Now:              now,
 		IdentitySecret:   s.cfg.IdentitySecret,
 		DeliverySafety:   s.cfg.ExpirySafetyMargin(),
-		MaxProofAge:      s.cfg.MaxProofAge(),
+		MaxProofAge:      0,
 	}, candidates, commitBinding)
 	if err != nil {
 		return nil, domain.StoreUnavailable(err)
+	}
+	if deliveryCache != nil {
+		consumed := make([]domain.Candidate, 0, len(final.Items))
+		for _, c := range final.Items {
+			consumed = append(consumed, byFP[c.Fingerprint].candidate)
+		}
+		deliveryCache.ConsumeStaticDelivery(consumed)
 	}
 	committed := map[string]AcquiredItem{}
 	for _, c := range final.Items {
@@ -969,7 +1010,7 @@ func (r *acquireRun) usablePreparedItems(count int, now time.Time,
 	out := make([]AcquiredItem, 0, count)
 	for _, p := range r.prepared {
 		ev := p.item.Validation
-		if ev.CompletedAt.IsZero() || now.Sub(ev.CompletedAt) > maxProofAge ||
+		if ev.CompletedAt.IsZero() || ev.CompletedAt.After(now) || (maxProofAge > 0 && now.Sub(ev.CompletedAt) > maxProofAge) ||
 			!p.item.ExpiresAt.After(now) {
 			continue
 		}
@@ -980,6 +1021,9 @@ func (r *acquireRun) usablePreparedItems(count int, now time.Time,
 		seen[fp] = true
 		item := p.item
 		item.Validation = deliveryEvidence(ev, maxProofAge)
+		if isStaticCandidate(p.candidate) {
+			item.Validation.ValidUntil = cloneTime(p.candidate.CacheExpiresAt)
+		}
 		item.ProviderExpiresAt = utcTimePtr(p.candidate.Offer.ProviderExpiresAt)
 		item.ProxyURI = proxyURIFrom(item.Conn)
 		out = append(out, item)
@@ -1024,14 +1068,16 @@ func (s *AcquireService) cleanupRunReservations(owner string, run *acquireRun) {
 	_ = s.releaseOwnedReservationsBounded(owner, ids)
 }
 
-// deliveryEvidence normalizes fresh proof into the delivered wire shape:
-// UTC timestamps plus a proof-reuse deadline that stays independent of the
-// lease and cache windows.
+// deliveryEvidence keeps actual verification timestamps. A zero proof age
+// means no separate expiry; list callers attach the batch deadline instead.
 func deliveryEvidence(ev domain.Evidence, maxProofAge time.Duration) domain.Evidence {
 	ev.StartedAt = ev.StartedAt.UTC()
 	ev.CompletedAt = ev.CompletedAt.UTC()
-	valid := ev.CompletedAt.Add(maxProofAge)
-	ev.ValidUntil = &valid
+	ev.ValidUntil = nil
+	if maxProofAge > 0 {
+		valid := ev.CompletedAt.Add(maxProofAge)
+		ev.ValidUntil = &valid
+	}
 	return ev
 }
 
@@ -1109,16 +1155,10 @@ func (s *AcquireService) feedCandidates(ctx context.Context, run *acquireRun, ou
 	if req.Filters.SourceIDs != nil && len(req.Filters.SourceIDs) == 0 {
 		return
 	}
-	scope := RefillScope{Transports: req.Filters.Transports, Countries: req.Filters.Countries}
-	// On-demand API is the default preference, not a hard-only path. Give it
-	// the first bounded chance whenever the project may use provider sources;
-	// uploaded/static inventory remains the fallback in the same request.
-	if req.Filters.SourceIDs == nil {
-		if ids, err := s.store.ProviderSourcesForRefill(ctx, s.Now(), nil,
-			maxRefillBatches); err == nil && len(ids) > 0 {
-			s.refillFromSources(ctx, run, out, req, scope, ids,
-				req.Count-int(run.delivered.Load()))
-		}
+	scope := RefillScope{ProjectID: req.ProjectID, Transports: req.Filters.Transports, Countries: req.Filters.Countries}
+	if req.Validation != nil {
+		scope.EvidenceScopeHash = domain.EvidenceScopeHash(*req.Validation)
+		scope.EvidenceNotBefore = time.Time{}
 	}
 	for int(run.attempts.Load()) < run.maxAttempts {
 		if ctx.Err() != nil {
@@ -1130,6 +1170,7 @@ func (s *AcquireService) feedCandidates(ctx context.Context, run *acquireRun, ou
 		}
 		exclude := run.excludeList()
 		cands, err := s.store.SelectCandidates(ctx, sqlite.SelectionFilters{
+			ProjectID:    req.ProjectID,
 			Profile:      req.Profile,
 			Now:          s.Now(),
 			UsefulCutoff: s.Now().Add(time.Duration(req.Lease.MinUsableMS)*time.Millisecond + s.cfg.ExpirySafetyMargin()),
@@ -1214,18 +1255,10 @@ func (s *AcquireService) refillDemand(ctx context.Context, run *acquireRun,
 	if wanted < 1 {
 		wanted = 1
 	}
-	// On-demand API supply is the default preference, but an unavailable API
-	// must not starve eligible static/uploaded supply. Try a bounded API batch
-	// first, then a bounded static batch in the same request budget.
-	ids, err := s.store.ProviderSourcesForRefill(ctx, s.Now(), req.Filters.SourceIDs, maxRefillBatches)
+	// All enabled network adapters use the same cache/refill path.
+	ids, err := s.store.StaticSourcesForRefill(ctx, s.Now(), req.Filters.SourceIDs, maxRefillBatches, req.ProjectID)
 	if err == nil && len(ids) > 0 {
-		if s.refillFromSources(ctx, run, out, req, scope, ids, wanted) {
-			return
-		}
-	}
-	staticIDs, serr := s.store.StaticSourcesForRefill(ctx, s.Now(), req.Filters.SourceIDs, maxRefillBatches)
-	if serr == nil && len(staticIDs) > 0 {
-		_ = s.refillFromSources(ctx, run, out, req, scope, staticIDs, wanted)
+		_ = s.refillFromSources(ctx, run, out, req, scope, ids, wanted)
 	}
 }
 
@@ -1419,20 +1452,31 @@ func (s *AcquireService) processCandidate(ctx context.Context, overallCtx contex
 	probeCtx, cancelProbe := context.WithTimeout(ctx, s.cfg.ProbeTotalTimeout())
 	defer cancelProbe()
 	var (
-		ev        domain.Evidence
-		fail      *validation.Failure
-		fromCache bool
+		ev                domain.Evidence
+		fail              *validation.Failure
+		fromCache         bool
+		cachedObservation *domain.Observation
 	)
-	// Recent pool-verified evidence inside the effective cache TTL replaces
-	// the probe for inventory candidates only; every API/static request-local
-	// batch is verified live.
-	if res.Candidate.Ephemeral {
-		// no probe before the final transaction
-	} else if s.cfg.EffectiveEvidenceCacheTTL() > 0 {
+	// Same-scope PASS is reusable while the connection is retained. Uploads
+	// have no proof clock expiry; network lists are bounded by their batch
+	// lifetime and single-use delivery. On-demand supply is always probed.
+	if isStaticCandidate(res.Candidate) {
+		if provider, ok := s.Refiller.(StaticEvidenceProvider); ok {
+			if hit, obs, ok := provider.StaticRecentEvidence(res.Candidate, domain.EvidenceScopeHash(*req.Validation), time.Time{}); ok {
+				ev = hit
+				cachedObservation = obs
+				fromCache = true
+				ev.AttemptID = domain.NewID("att_")
+				ev.RequestID = requestID
+			}
+		}
+	} else if res.Candidate.Ephemeral {
+		// On-demand provider batches are always verified in this request.
+	} else {
 		hits, err := s.store.RecentEvidence(ctx,
 			domain.EvidenceScopeHash(*req.Validation),
 			[]sqlite.EvidenceKey{s.evidenceKey(res.Candidate)},
-			s.Now().Add(-s.cfg.EffectiveEvidenceCacheTTL()))
+			time.Time{})
 		if err == nil {
 			if hit, ok := hits[s.fingerprintConn(res.Candidate.Resource.Conn)]; ok {
 				ev, fail = hit, nil
@@ -1470,15 +1514,22 @@ func (s *AcquireService) processCandidate(ctx context.Context, overallCtx contex
 		return
 	}
 	scopeHash := domain.EvidenceScopeHash(*req.Validation)
+	if isStaticCandidate(res.Candidate) && !fromCache {
+		if provider, ok := s.Refiller.(StaticEvidenceProvider); ok && (fail == nil || fail.Attributed()) {
+			if fail != nil {
+				ev.Outcome = "FAIL"
+			}
+			_ = provider.RecordStaticEvidence(ctx, res.Candidate, scopeHash, ev, buildObservation(s.geo, ev, s.Now()))
+		}
+	}
 	if fail == nil {
-		// Fresh PASS evidence is cached per scope+incarnation so short-TTL
-		// reuse can skip the next probe; API-fetched ephemeral candidates
-		// are always probed because a vendor batch must be verified live.
-		if !fromCache && !res.Candidate.Ephemeral && s.cfg.EffectiveEvidenceCacheTTL() > 0 {
+		// PASS is retained per exact scope/version/incarnation, without a
+		// separate clock expiry. On-demand vendor batches remain request-local.
+		if !fromCache && !res.Candidate.Ephemeral {
 			_ = s.store.PutEvidenceProduction(ctx, s.evidenceKey(res.Candidate),
 				scopeHash, ev)
 		}
-	} else if fail.Attributed() && !res.Candidate.Ephemeral && s.cfg.EffectiveEvidenceCacheTTL() > 0 {
+	} else if fail.Attributed() && !res.Candidate.Ephemeral {
 		// The newest negative result hides any older PASS for the same key.
 		ev.Outcome = "FAIL"
 		_ = s.store.PutEvidenceProduction(ctx, s.evidenceKey(res.Candidate),
@@ -1497,7 +1548,14 @@ func (s *AcquireService) processCandidate(ctx context.Context, overallCtx contex
 		run.mu.Unlock()
 	}
 	if fail == nil {
-		obs := recordObservation(ctx, s.store, s.geo, res.Candidate.Resource.ID, ev, s.Now())
+		obs := cachedObservation
+		if obs == nil {
+			if res.Candidate.Ephemeral {
+				obs = buildObservation(s.geo, ev, s.Now())
+			} else {
+				obs = recordObservation(ctx, s.store, s.geo, res.Candidate.Resource.ID, ev, s.Now())
+			}
+		}
 		s.recordSourceOutcome(ctx, res.Candidate.Offer.SourceID,
 			res.Candidate.SourceConfigVersion, "PASS")
 		if !countryMatches(req.Filters.Countries, obs) {
@@ -1532,16 +1590,14 @@ func (s *AcquireService) processCandidate(ctx context.Context, overallCtx contex
 	}
 	s.releaseReservationBounded(requestID, res.ReservationID)
 	run.recordFailure(fail.Kind)
-	if fail.Kind == validation.FailAuth && !res.Candidate.Ephemeral {
-		fingerprint := s.fingerprintConn(res.Candidate.Resource.Conn)
-		retired, err := s.store.RetireResourceOwned(ctx, res.Candidate.Resource.ID,
-			res.Candidate.Incarnation, res.Candidate.Offer.SourceID,
-			res.Candidate.SourceConfigVersion, "AUTH_FAILED", s.Now())
-		if err == nil && retired > 0 {
-			_, _ = s.store.ExpireBindingsForFingerprints(ctx, []string{fingerprint}, s.Now())
-			_ = s.store.InvalidateEvidence(ctx, []string{fingerprint})
+	if probeHasVerdict(ctx, fail) {
+		if err := retireFailedCandidate(ctx, s.store, s.Refiller, res.Candidate, s.cfg.IdentitySecret, s.Now(), req.ProjectID); err != nil {
+			run.mu.Lock()
+			run.reserveErr = err
+			run.mu.Unlock()
 		}
 	}
+
 	if fail.Attributed() {
 		if !res.Candidate.Ephemeral {
 			_ = s.health.RecordScoped(ctx, res.Candidate.Resource.ID, res.ContextKey,
@@ -1706,7 +1762,7 @@ func (s *AcquireService) stickyEvidenceStillValid(ctx context.Context,
 	}
 	scopeHash := domain.EvidenceScopeHash(*req.Validation)
 	hits, err := s.store.RecentEvidence(ctx, scopeHash,
-		[]sqlite.EvidenceKey{s.evidenceKey(res.Candidate)}, s.Now().Add(-s.cfg.MaxProofAge()))
+		[]sqlite.EvidenceKey{s.evidenceKey(res.Candidate)}, time.Time{})
 	if err != nil {
 		return false, domain.Evidence{}
 	}
@@ -1743,7 +1799,7 @@ func (s *AcquireService) dispatchGuard(ctx context.Context, run *acquireRun, req
 		if err := json.Unmarshal([]byte(row.ValidationJSON), &ev); err != nil {
 			continue
 		}
-		if now.Sub(ev.CompletedAt) > s.cfg.MaxProofAge() {
+		if ev.CompletedAt.IsZero() || ev.CompletedAt.After(now) {
 			_, _ = s.store.SetLeaseState(ctx, it.LeaseID, "REVOKED", now)
 			continue
 		}

@@ -1,0 +1,126 @@
+{
+  "release": "supplywait-20261106-8e23869c8d2b",
+  "observed_at": "2026-11-06T12:28:02.488728+00:00",
+  "started_at": "2026-11-06T12:17:19.17283922Z",
+  "container_status": "running",
+  "health": "healthy",
+  "restarts": 0,
+  "targets": {
+    "default": 100
+  },
+  "jobs_since_start": 4,
+  "active_jobs": 0,
+  "zero_probe_exhausted_jobs": 0,
+  "recent_jobs": [
+    {
+      "job_id": "warm_d6fe3635f589e2e7938025e4",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 24,
+      "probed": 73,
+      "failed": 71,
+      "stop_reason": "inventory_exhausted",
+      "created_at": "2026-11-06T12:23:34.478579002Z",
+      "finished_at": "2026-11-06T12:24:11.369612959Z"
+    },
+    {
+      "job_id": "warm_2887f765500cf8668db6bedb",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 22,
+      "probed": 294,
+      "failed": 293,
+      "stop_reason": "deadline",
+      "created_at": "2026-11-06T12:21:29.555773306Z",
+      "finished_at": "2026-11-06T12:23:29.608683611Z"
+    },
+    {
+      "job_id": "warm_f8a545626b0078b6699eef5d",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 21,
+      "probed": 291,
+      "failed": 289,
+      "stop_reason": "deadline",
+      "created_at": "2026-11-06T12:19:24.607457937Z",
+      "finished_at": "2026-11-06T12:21:24.715786277Z"
+    },
+    {
+      "job_id": "warm_37d09b6b9f26299d4c589cbc",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 19,
+      "probed": 329,
+      "failed": 310,
+      "stop_reason": "deadline",
+      "created_at": "2026-11-06T12:17:19.569965863Z",
+      "finished_at": "2026-11-06T12:19:19.703042665Z"
+    }
+  ],
+  "sources": [
+    {
+      "source_id": "freeproxy-http",
+      "enabled": true,
+      "cache": {
+        "fresh": true,
+        "batch_id": "static_aeac8eff0b56f8e12200ba8f",
+        "candidates": 300,
+        "verified": 12,
+        "blacklisted": 285,
+        "fetched_at": "2026-11-06T20:17:20.782768877+08:00",
+        "expires_at": "2026-11-06T20:47:20.782768877+08:00"
+      },
+      "last_fetch_at": "2026-11-06T12:17:19.750139739Z",
+      "last_fetch_error": null
+    },
+    {
+      "source_id": "proxyscrape-elite",
+      "enabled": true,
+      "cache": {
+        "fresh": true,
+        "batch_id": "static_8196ea72e1015d4d0139c95a",
+        "candidates": 278,
+        "verified": 10,
+        "blacklisted": 263,
+        "fetched_at": "2026-11-06T20:17:19.74381929+08:00",
+        "expires_at": "2026-11-06T20:47:19.74381929+08:00"
+      },
+      "last_fetch_at": "2026-11-06T12:17:19.582220945Z",
+      "last_fetch_error": null
+    },
+    {
+      "source_id": "scdn-http",
+      "enabled": true,
+      "cache": {
+        "fresh": true,
+        "batch_id": "static_3043bdc17380f8e8cd145d0d",
+        "candidates": 20,
+        "verified": 0,
+        "blacklisted": 20,
+        "fetched_at": "2026-11-06T20:17:20.587691571+08:00",
+        "expires_at": "2026-11-06T20:47:20.587691571+08:00"
+      },
+      "last_fetch_at": "2026-11-06T12:17:20.002248997Z",
+      "last_fetch_error": null
+    },
+    {
+      "source_id": "spys-http",
+      "enabled": true,
+      "cache": {
+        "fresh": true,
+        "batch_id": "static_7d1709064581e7b2844778d9",
+        "candidates": 399,
+        "verified": 2,
+        "blacklisted": 395,
+        "fetched_at": "2026-11-06T20:17:19.992253456+08:00",
+        "expires_at": "2026-11-06T20:47:19.992253456+08:00"
+      },
+      "last_fetch_at": "2026-11-06T12:17:19.57883556Z",
+      "last_fetch_error": null
+    }
+  ]
+}

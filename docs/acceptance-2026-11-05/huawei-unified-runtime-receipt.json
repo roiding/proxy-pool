@@ -1,0 +1,101 @@
+{
+  "release": "unified-20261105-db86196c23dc",
+  "checked_at": "2026-11-05T15:57:44.491209+00:00",
+  "version": "unified-20261105-db86196c23dc (db86196c23dc)",
+  "health": "healthy",
+  "default_auto_prewarm_target": 100,
+  "sources": [
+    {
+      "source_id": "freeproxy-http",
+      "verified": 12,
+      "blacklisted": 283,
+      "same_download_as_first_auto_job": true
+    },
+    {
+      "source_id": "proxyscrape-elite",
+      "verified": 21,
+      "blacklisted": 383,
+      "same_download_as_first_auto_job": true
+    },
+    {
+      "source_id": "scdn-http",
+      "verified": 0,
+      "blacklisted": 20,
+      "same_download_as_first_auto_job": true
+    },
+    {
+      "source_id": "spys-http",
+      "verified": 8,
+      "blacklisted": 390,
+      "same_download_as_first_auto_job": true
+    }
+  ],
+  "recent_automatic_jobs": [
+    {
+      "job_id": "warm_b700cd06611fefcff4fc7a3f",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 41,
+      "probed": 0,
+      "failed": 0,
+      "stop_reason": "inventory_exhausted"
+    },
+    {
+      "job_id": "warm_0f6ba5ed2102d7f8bc367705",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 41,
+      "probed": 4,
+      "failed": 4,
+      "stop_reason": "inventory_exhausted"
+    },
+    {
+      "job_id": "warm_4a7bea54e4dcdf87cbc67b40",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 41,
+      "probed": 239,
+      "failed": 229,
+      "stop_reason": "inventory_exhausted"
+    },
+    {
+      "job_id": "warm_beca2fc57daaa8775af6b825",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 30,
+      "probed": 266,
+      "failed": 257,
+      "stop_reason": "deadline"
+    },
+    {
+      "job_id": "warm_f640600b794681beaaf40bc3",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 22,
+      "probed": 288,
+      "failed": 279,
+      "stop_reason": "deadline"
+    },
+    {
+      "job_id": "warm_e3297cc313a1eb1cbd80e944",
+      "automatic": true,
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 14,
+      "probed": 320,
+      "failed": 306,
+      "stop_reason": "deadline"
+    }
+  ],
+  "runtime_binary_sha256": {
+    "proxy-pool": "f532633c3670a37578e67a343fba968e913ae3c199efc9f68f7d1664bda8f651",
+    "sitecheck": "46e1b3510564191dad533a41480a0007242c3551d1d7d33359accb101845c533"
+  },
+  "buildtools_and_build_cache_removed": true,
+  "release_and_backup_preserved": true
+}

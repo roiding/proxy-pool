@@ -189,6 +189,11 @@ func normalizeAdapter(adapterType, parserType string) (string, string, *domain.E
 			return "", "", domain.InvalidRequest("parser_type %q is not supported for static_url; use lines_v1", parserType)
 		}
 		return application.AdapterStatic, application.ParserLines, nil
+	case application.AdapterAccount:
+		if parserType != "" && parserType != application.ParserWebshare {
+			return "", "", domain.InvalidRequest("parser_type %q is not supported for account_list; use webshare_list_v1", parserType)
+		}
+		return application.AdapterAccount, application.ParserWebshare, nil
 	default:
 		return "", "", domain.InvalidRequest("unknown adapter_type %q", adapterType)
 	}
@@ -221,6 +226,8 @@ func inferAdapter(cfg application.SourceConfig) string {
 		return application.AdapterSite
 	case cfg.Static != nil:
 		return application.AdapterStatic
+	case cfg.Account != nil:
+		return application.AdapterAccount
 	default:
 		return application.AdapterCustom
 	}
@@ -237,8 +244,11 @@ func validateAdapterConfigShape(adapter string, cfg application.SourceConfig) *d
 	if cfg.Static != nil {
 		shapes++
 	}
+	if cfg.Account != nil {
+		shapes++
+	}
 	if shapes > 1 {
-		return domain.InvalidRequest("config must contain exactly one of provider, site, or static")
+		return domain.InvalidRequest("config must contain exactly one of provider, site, static, or account")
 	}
 	if adapter != application.AdapterCustom && shapes != 1 {
 		return domain.InvalidRequest("adapter %s requires its nested config object", adapter)

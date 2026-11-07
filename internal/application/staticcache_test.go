@@ -55,7 +55,7 @@ func TestStaticURLRefreshAndCache(t *testing.T) {
 	}
 }
 
-func TestStaticURLConditionalRevalidation(t *testing.T) {
+func TestStaticURLFreshCacheAvoidsRepeatedUpstreamFetch(t *testing.T) {
 	svc := newTestIngest(t)
 	ctx := context.Background()
 	var derr *domain.Error
@@ -88,11 +88,11 @@ func TestStaticURLConditionalRevalidation(t *testing.T) {
 	if derr != nil {
 		t.Fatal(derr)
 	}
-	if !res.NotModified || res.Fetched != 1 {
+	if !res.CacheHit || res.NotModified || res.Fetched != 1 {
 		t.Fatalf("revalidation result: %+v", res)
 	}
-	if !sawValidator.Load() {
-		t.Fatal("server never observed the conditional validator")
+	if sawValidator.Load() {
+		t.Fatal("fresh cache unexpectedly called the upstream again")
 	}
 	// A 304 keeps the previous batch and its candidates.
 	_, batchID, _ := svc.CachedStaticCandidates("static-2")
@@ -119,7 +119,7 @@ func TestStaticURLTTLExpiry(t *testing.T) {
 	if _, derr = svc.RefreshStaticSource(ctx, "static-3"); derr != nil {
 		t.Fatal(derr)
 	}
-	svc.Now = func() time.Time { return time.Now().Add(20 * time.Minute) }
+	svc.Now = func() time.Time { return time.Now().Add(DefaultStaticCacheTTL + time.Second) }
 	if _, _, ok := svc.CachedStaticCandidates("static-3"); ok {
 		t.Fatal("expired cache must not serve")
 	}
@@ -187,13 +187,24 @@ func TestStaticRefreshGuards(t *testing.T) {
 	svc := newTestIngest(t)
 	ctx := context.Background()
 	var derr *domain.Error
+	vendor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"code":200,"data":{"proxies":["127.0.0.1:3128"],"count":1}}`))
+	}))
+	defer vendor.Close()
+	svc.ScdnEndpoint, svc.ScdnHTTPClient = vendor.URL, vendor.Client()
 	if _, derr = svc.CreateSource(ctx, "guard-provider", SourceConfig{
 		Provider: &ProviderConfig{Protocol: "http"},
 	}, true); derr != nil {
 		t.Fatal(derr)
 	}
-	if _, derr = svc.RefreshStaticSource(ctx, "guard-provider"); derr == nil {
-		t.Fatal("provider channels are on-demand only, never static cache")
+	if result, err := svc.RefreshStaticSource(ctx, "guard-provider"); err != nil || result.Retained != 1 {
+		t.Fatalf("provider must use the shared network cache: %+v %v", result, err)
+	}
+	if _, derr = svc.CreateSource(ctx, "guard-upload", SourceConfig{}, true); derr != nil {
+		t.Fatal(derr)
+	}
+	if _, derr = svc.RefreshStaticSource(ctx, "guard-upload"); derr == nil || derr.Code != "INVALID_REQUEST" {
+		t.Fatalf("uploaded inventory must not use network refresh: %v", derr)
 	}
 	if _, derr = svc.CreateSource(ctx, "guard-static", SourceConfig{
 		Static: &StaticConfig{URL: "http://127.0.0.1:1/none"},
@@ -255,7 +266,10 @@ func TestStaticCacheByteAndFlightBounds(t *testing.T) {
 
 func TestStaticCacheInvalidationAndReplacementReleaseAccountedState(t *testing.T) {
 	svc := newTestIngest(t)
-	if err := svc.ConfigureStaticCache(time.Minute, 3, 8192); err != nil {
+	// Full candidate structs are now included in cache accounting. This test
+	// exercises replacement/release, not capacity eviction, so give both
+	// initial batches enough room under the corrected measurement.
+	if err := svc.ConfigureStaticCache(time.Minute, 3, 65536); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now()

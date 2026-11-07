@@ -103,7 +103,7 @@ func TestDownloadBodyCap(t *testing.T) {
 		_, _ = w.Write(make([]byte, 4096))
 	}))
 	defer srv.Close()
-	if _, err := Download(context.Background(), srv.URL, Conditional{}, Options{MaxBytes: 1024}); err == nil {
+	if _, err := Download(context.Background(), srv.URL, Conditional{}, Options{MaxBytes: 1024, AllowPrivate: true}); err == nil {
 		t.Fatal("oversized body must fail")
 	}
 }
@@ -149,7 +149,7 @@ func TestDownloadTimeoutBounds(t *testing.T) {
 	defer srv.Close()
 	started := time.Now()
 	_, err := Download(context.Background(), srv.URL, Conditional{}, Options{
-		Timeout: 50 * time.Millisecond,
+		Timeout: 50 * time.Millisecond, AllowPrivate: true,
 	})
 	if err == nil {
 		t.Fatal("slow server must time out")

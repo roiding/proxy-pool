@@ -43,8 +43,8 @@ func TestDefaultsPassValidation(t *testing.T) {
 		t.Fatalf("effective TTL %v must equal configured TTL %v by default",
 			cfg.EffectiveEvidenceCacheTTL(), cfg.EvidenceCacheTTL())
 	}
-	if cfg.StaticCacheTTL() != 5*time.Minute {
-		t.Fatalf("default static cache TTL = %v, want 5m", cfg.StaticCacheTTL())
+	if cfg.StaticCacheTTL() != 30*time.Minute {
+		t.Fatalf("default static cache TTL = %v, want 30m", cfg.StaticCacheTTL())
 	}
 	if cfg.StaticCacheMaxEntries != 256 || cfg.StaticCacheMaxBytes != 4<<20 {
 		t.Fatalf("unexpected static cache bounds: %d entries, %d bytes",

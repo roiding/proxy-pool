@@ -1,0 +1,69 @@
+{
+  "checks": [
+    "file and textarea controls visible on channel page and labelled",
+    "page refresh preserves upload draft",
+    "exhausted cache creates no jobs, probes or downloads across at least two scheduling intervals",
+    "TXT file creates custom source and imports one durable resource",
+    "pasted duplicate and invalid line preserve inventory, rejection details and editable input",
+    "manual text after JSON file uses current text format",
+    "existing network channel cannot be overwritten by upload creation",
+    "oversized file rejected without losing current draft",
+    "new upload resumes automatic replenishment to 2/2 with one new probe and no list refetch"
+  ],
+  "ui": "jsdom with real local authenticated API; browser control unavailable",
+  "exhausted": {
+    "elapsed_ms": 397684,
+    "jobs": 1,
+    "requests": {
+      "list": 1,
+      "proxy_18088": 1,
+      "proxy_18090": 0
+    }
+  },
+  "resumed": {
+    "jobs": [
+      {
+        "job_id": "warm_95bfd55d1ebfc6d41168593c",
+        "state": "COMPLETED",
+        "ready": 2,
+        "target": 2,
+        "probed": 1,
+        "stop_reason": "target_met"
+      },
+      {
+        "job_id": "warm_3e728ae36e4137db2064c381",
+        "state": "PARTIAL",
+        "ready": 1,
+        "target": 2,
+        "probed": 1,
+        "stop_reason": "inventory_exhausted"
+      }
+    ],
+    "requests": {
+      "list": 1,
+      "proxy_18088": 1,
+      "proxy_18090": 1
+    }
+  },
+  "observed_at": "2026-11-06T11:52:21.511Z",
+  "import_requests": [
+    {
+      "path": "/api/v1/admin/sources/qa-uploads/imports",
+      "method": "POST",
+      "contentType": "text/plain",
+      "status": 201
+    },
+    {
+      "path": "/api/v1/admin/sources/qa-uploads/imports",
+      "method": "POST",
+      "contentType": "text/plain",
+      "status": 201
+    },
+    {
+      "path": "/api/v1/admin/sources/qa-uploads/imports",
+      "method": "POST",
+      "contentType": "text/plain",
+      "status": 201
+    }
+  ]
+}

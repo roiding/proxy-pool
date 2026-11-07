@@ -48,12 +48,12 @@ func decodeAllowedSources(value any) ([]string, error) {
 func (s *Store) EnsureProject(ctx context.Context, p domain.Project, now time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO projects(project_id, name, enabled, cooldown_ms, timeout_ms,
-		  validation_json, allowed_source_ids, config_version, created_at, updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?)
+		  validation_json, allowed_source_ids, config_version, created_at, updated_at, network_reuse_cooldown_ms, auto_prewarm_target)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(project_id) DO NOTHING`,
 		p.ID, p.Name, boolInt(p.Enabled), p.Defaults.CooldownMS, p.Defaults.TimeoutMS,
 		marshalJSONDefault(p.Defaults.Validation), encodeAllowedSources(p.AllowedSourceIDs),
-		p.ConfigVersion, fmtTime(now), fmtTime(now))
+		p.ConfigVersion, fmtTime(now), fmtTime(now), normalizedNetworkCooldown(p.Defaults.NetworkReuseCooldownMS), p.Defaults.AutoPrewarmTarget)
 	return mapErr(err)
 }
 
@@ -73,8 +73,8 @@ func (s *Store) UpsertProject(ctx context.Context, p domain.Project, now time.Ti
 		version++
 		_, err = t.ExecContext(ctx, `
 			INSERT INTO projects(project_id, name, enabled, cooldown_ms, timeout_ms,
-			  validation_json, allowed_source_ids, config_version, created_at, updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?)
+			  validation_json, allowed_source_ids, config_version, created_at, updated_at, network_reuse_cooldown_ms, auto_prewarm_target)
+			VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(project_id) DO UPDATE SET
 			  name = excluded.name,
 			  enabled = excluded.enabled,
@@ -83,10 +83,11 @@ func (s *Store) UpsertProject(ctx context.Context, p domain.Project, now time.Ti
 			  validation_json = excluded.validation_json,
 			  allowed_source_ids = excluded.allowed_source_ids,
 			  config_version = excluded.config_version,
-			  updated_at = excluded.updated_at`,
+			  updated_at = excluded.updated_at, network_reuse_cooldown_ms = excluded.network_reuse_cooldown_ms,
+			  auto_prewarm_target = excluded.auto_prewarm_target`,
 			p.ID, p.Name, boolInt(p.Enabled), p.Defaults.CooldownMS, p.Defaults.TimeoutMS,
 			marshalJSONDefault(p.Defaults.Validation), encodeAllowedSources(p.AllowedSourceIDs),
-			version, fmtTime(now), fmtTime(now))
+			version, fmtTime(now), fmtTime(now), normalizedNetworkCooldown(p.Defaults.NetworkReuseCooldownMS), p.Defaults.AutoPrewarmTarget)
 		return err
 	})
 	if err != nil {
@@ -103,7 +104,7 @@ func scanProject(row interface{ Scan(...any) error }) (domain.Project, error) {
 	var validation string
 	var created, updated string
 	err := row.Scan(&p.ID, &p.Name, &enabled, &p.Defaults.CooldownMS, &p.Defaults.TimeoutMS,
-		&validation, &allowed, &p.ConfigVersion, &created, &updated)
+		&validation, &allowed, &p.ConfigVersion, &created, &updated, &p.Defaults.NetworkReuseCooldownMS, &p.Defaults.AutoPrewarmTarget)
 	if err != nil {
 		return domain.Project{}, err
 	}
@@ -126,7 +127,7 @@ func scanProject(row interface{ Scan(...any) error }) (domain.Project, error) {
 func (s *Store) GetProject(ctx context.Context, id string) (domain.Project, error) {
 	p, err := scanProject(s.db.QueryRowContext(ctx, `
 		SELECT project_id, name, enabled, cooldown_ms, timeout_ms, validation_json,
-		       allowed_source_ids, config_version, created_at, updated_at
+		       allowed_source_ids, config_version, created_at, updated_at, network_reuse_cooldown_ms, auto_prewarm_target
 		FROM projects WHERE project_id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Project{}, domain.NotFound("project")
@@ -137,7 +138,7 @@ func (s *Store) GetProject(ctx context.Context, id string) (domain.Project, erro
 func (s *Store) ListProjects(ctx context.Context) ([]domain.Project, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT project_id, name, enabled, cooldown_ms, timeout_ms, validation_json,
-		       allowed_source_ids, config_version, created_at, updated_at
+		       allowed_source_ids, config_version, created_at, updated_at, network_reuse_cooldown_ms, auto_prewarm_target
 		FROM projects ORDER BY created_at, project_id`)
 	if err != nil {
 		return nil, mapErr(err)
@@ -152,4 +153,11 @@ func (s *Store) ListProjects(ctx context.Context) ([]domain.Project, error) {
 		out = append(out, p)
 	}
 	return out, mapErr(rows.Err())
+}
+
+func normalizedNetworkCooldown(ms int64) int64 {
+	if ms <= 0 {
+		return DefaultNetworkReuseCooldown.Milliseconds()
+	}
+	return ms
 }

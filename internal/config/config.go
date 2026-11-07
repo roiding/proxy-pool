@@ -85,7 +85,7 @@ type Config struct {
 	HuaweiRegion               string `json:"huawei_region"`
 	HuaweiResourceID           string `json:"huawei_resource_id"`
 	HuaweiPackageID            string `json:"huawei_package_id"`
-	// SecretEncryptionKey protects stored cloud/Bark secrets. It lives in
+	// SecretEncryptionKey protects stored cloud/Bark/account secrets. It lives in
 	// deployment config only and must never be written into the database.
 	SecretEncryptionKey string `json:"secret_encryption_key"`
 
@@ -96,13 +96,14 @@ type Config struct {
 	NightlyValidationTime string `json:"custom_nightly_validation_time"`
 	NightlyRetireFailures int    `json:"custom_nightly_retire_failures"`
 
-	SourceFailureThreshold  int    `json:"source_failure_threshold"`
-	SourceCooldownBaseMS    int64  `json:"source_cooldown_base_ms"`
-	SourceCooldownMaxMS     int64  `json:"source_cooldown_max_ms"`
-	PrewarmDeadlineMS       int64  `json:"prewarm_deadline_ms"`
-	PrewarmMaxAttempts      int    `json:"prewarm_max_attempts"`
-	GeoIPDBPath             string `json:"geoip_db_path"`
-	MaxDownstreamCooldownMS int64  `json:"max_downstream_cooldown_ms"`
+	SourceFailureThreshold    int    `json:"source_failure_threshold"`
+	SourceCooldownBaseMS      int64  `json:"source_cooldown_base_ms"`
+	SourceCooldownMaxMS       int64  `json:"source_cooldown_max_ms"`
+	PrewarmDeadlineMS         int64  `json:"prewarm_deadline_ms"`
+	PrewarmMaxAttempts        int    `json:"prewarm_max_attempts"`
+	GeoIPDBPath               string `json:"geoip_db_path"`
+	MaxDownstreamCooldownMS   int64  `json:"max_downstream_cooldown_ms"`
+	PoolMaintenanceIntervalMS int64  `json:"pool_maintenance_interval_ms"`
 
 	CooldownBaseMS int64   `json:"first_failure_cooldown_ms"`
 	CooldownMaxMS  int64   `json:"cooldown_max_ms"`
@@ -130,7 +131,7 @@ func Default() Config {
 		CandidatePage:              8,
 		MaxCandidateAttempts:       25,
 		EvidenceCacheTTLMS:         30000,
-		StaticCacheTTLMS:           300000,
+		StaticCacheTTLMS:           1800000,
 		StaticCacheMaxEntries:      256,
 		StaticCacheMaxBytes:        4 << 20,
 		StickyBindingTTLMS:         600000,
@@ -160,6 +161,7 @@ func Default() Config {
 		CloudUsageThresholdPercent: 80,
 		PrewarmMaxAttempts:         500,
 		MaxDownstreamCooldownMS:    7 * 24 * 3600 * 1000,
+		PoolMaintenanceIntervalMS:  5 * 60 * 1000,
 		CooldownBaseMS:             30000,
 		CooldownMaxMS:              15 * 60 * 1000,
 		CooldownJitter:             0.25,
@@ -353,6 +355,7 @@ func (c Config) validate(present map[string]bool) error {
 	checkRange("attempt_retention_ms", c.AttemptRetentionMS, hourMS, 365*dayMS)
 	checkRange("source_cooldown_max_ms", c.SourceCooldownMaxMS, 1, 365*dayMS)
 	checkRange("max_downstream_cooldown_ms", c.MaxDownstreamCooldownMS, 1, 365*dayMS)
+	checkRange("pool_maintenance_interval_ms", c.PoolMaintenanceIntervalMS, 1000, dayMS)
 	checkRange("first_failure_cooldown_ms", c.CooldownBaseMS, 1, c.CooldownMaxMS)
 	checkRange("cooldown_max_ms", c.CooldownMaxMS, 1, 365*dayMS)
 	if math.IsNaN(c.CooldownJitter) || math.IsInf(c.CooldownJitter, 0) ||

@@ -12,10 +12,16 @@ RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
     go build -buildvcs=false -trimpath \
       -ldflags="-s -w -linkmode=external -extldflags '-static -no-pie' -X main.version=${VERSION} -X main.vcsRef=${VCS_REF}" \
       -o /out/proxy-pool ./cmd/proxy-pool
-RUN file /out/proxy-pool | grep -q 'statically linked'
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+    go build -buildvcs=false -trimpath \
+      -ldflags="-s -w -linkmode=external -extldflags '-static -no-pie'" \
+      -o /out/sitecheck ./cmd/sitecheck
+RUN file /out/proxy-pool | grep -q 'statically linked' \
+    && file /out/sitecheck | grep -q 'statically linked'
 
 FROM scratch AS release
 COPY --from=build /out/proxy-pool /proxy-pool
+COPY --from=build /out/sitecheck /sitecheck
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata \
@@ -24,6 +30,7 @@ RUN apk add --no-cache ca-certificates tzdata \
     && mkdir -p /var/lib/proxy-pool/data \
     && chown -R app:app /var/lib/proxy-pool
 COPY --from=build /out/proxy-pool /usr/local/bin/proxy-pool
+COPY --from=build /out/sitecheck /usr/local/bin/sitecheck
 ARG VERSION=dev
 ARG VCS_REF=
 LABEL org.opencontainers.image.version="${VERSION}" \

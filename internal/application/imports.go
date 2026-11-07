@@ -274,7 +274,11 @@ func (s *IngestService) parseImportJSON(src domain.Source, cfg SourceConfig, now
 			continue
 		}
 		cand := s.buildCandidate(src, cfg, conn, now)
-		cand.ProviderExpiresAt = expiresAt
+		// Uploads are durable until a real validation failure, not a clock
+		// expiry. Keep submitted expiry metadata as a claim, not a deadline.
+		if expiresAt != nil {
+			cand.Claims = map[string]string{"uploaded_expires_at": expiresAt.UTC().Format(time.RFC3339)}
+		}
 		candidates = append(candidates, cand)
 	}
 	return candidates, errs, nil
@@ -307,6 +311,9 @@ func parseImportJSONItem(allowPrivate bool, raw json.RawMessage) (domain.Connect
 	if len(item.Connection.Password) > maxImportCredentialLen {
 		return domain.Connection{}, nil, fmt.Errorf(
 			"password exceeds %d bytes", maxImportCredentialLen)
+	}
+	if err := custom.ValidateCredentials(item.Connection.Username, item.Connection.Password); err != nil {
+		return domain.Connection{}, nil, err
 	}
 	if item.Connection.Port == nil {
 		return domain.Connection{}, nil, fmt.Errorf("missing port")

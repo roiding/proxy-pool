@@ -270,7 +270,9 @@ func TestCoreStickyAuthRevalidationCannotRetireChangedSource(t *testing.T) {
 	if first.Delivered != 1 {
 		t.Fatalf("initial sticky delivery: %s", first.ShortfallReason)
 	}
-	time.Sleep(400 * time.Millisecond)
+	if err := e.store.InvalidateEvidence(context.Background(), []string{e.acquire.FingerprintOf(first.Items[0].Conn)}); err != nil {
+		t.Fatal(err)
+	}
 
 	type outcome struct {
 		result application.AcquireResult

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"proxypool/internal/application"
 	"proxypool/internal/domain"
 	"proxypool/internal/validation"
 )
@@ -19,22 +20,26 @@ type projectValidationBody struct {
 }
 
 type createProjectBody struct {
-	Name             string                 `json:"name"`
-	Enabled          *bool                  `json:"enabled"`
-	CooldownMS       *int64                 `json:"cooldown_ms"`
-	TimeoutMS        *int64                 `json:"timeout_ms"`
-	Validation       *projectValidationBody `json:"validation"`
-	AllowedSourceIDs optionalStringSlice    `json:"allowed_source_ids"`
+	AutoPrewarmTarget      *int                   `json:"auto_prewarm_target"`
+	Name                   string                 `json:"name"`
+	Enabled                *bool                  `json:"enabled"`
+	NetworkReuseCooldownMS *int64                 `json:"network_reuse_cooldown_ms"`
+	CooldownMS             *int64                 `json:"cooldown_ms"`
+	TimeoutMS              *int64                 `json:"timeout_ms"`
+	Validation             *projectValidationBody `json:"validation"`
+	AllowedSourceIDs       optionalStringSlice    `json:"allowed_source_ids"`
 }
 
 type patchProjectBody struct {
-	ConfigVersion    int64                  `json:"config_version"`
-	Name             *string                `json:"name"`
-	Enabled          *bool                  `json:"enabled"`
-	CooldownMS       *int64                 `json:"cooldown_ms"`
-	TimeoutMS        *int64                 `json:"timeout_ms"`
-	Validation       *projectValidationBody `json:"validation"`
-	AllowedSourceIDs optionalStringSlice    `json:"allowed_source_ids"`
+	AutoPrewarmTarget      *int                   `json:"auto_prewarm_target"`
+	ConfigVersion          int64                  `json:"config_version"`
+	Name                   *string                `json:"name"`
+	Enabled                *bool                  `json:"enabled"`
+	NetworkReuseCooldownMS *int64                 `json:"network_reuse_cooldown_ms"`
+	CooldownMS             *int64                 `json:"cooldown_ms"`
+	TimeoutMS              *int64                 `json:"timeout_ms"`
+	Validation             *projectValidationBody `json:"validation"`
+	AllowedSourceIDs       optionalStringSlice    `json:"allowed_source_ids"`
 }
 
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
@@ -109,6 +114,12 @@ func (s *Server) handlePatchProject(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Enabled != nil {
 		current.Enabled = *body.Enabled
+	}
+	if body.AutoPrewarmTarget != nil {
+		current.Defaults.AutoPrewarmTarget = *body.AutoPrewarmTarget
+	}
+	if body.NetworkReuseCooldownMS != nil {
+		current.Defaults.NetworkReuseCooldownMS = *body.NetworkReuseCooldownMS
 	}
 	if body.CooldownMS != nil {
 		current.Defaults.CooldownMS = *body.CooldownMS
@@ -275,9 +286,13 @@ func (s *Server) handleGetJobV1(w http.ResponseWriter, r *http.Request) {
 	if ident.Admin {
 		projectID = ""
 	}
-	job, derr := s.prewarm.GetJob(r.Context(), projectID, r.PathValue("id"))
-	if derr != nil {
-		writeError(w, derr)
+	job, err := s.store.GetProjectJob(r.Context(), projectID, r.PathValue("id"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if !ident.Admin && job.Kind != application.PrewarmJobKind {
+		writeError(w, domain.NotFound("job"))
 		return
 	}
 	writeJSON(w, http.StatusOK, job)
@@ -304,6 +319,12 @@ func (s *Server) projectFromCreate(body *createProjectBody) (domain.Project, *do
 		ID:      id,
 		Name:    name,
 		Enabled: enabled,
+	}
+	if body.AutoPrewarmTarget != nil {
+		project.Defaults.AutoPrewarmTarget = *body.AutoPrewarmTarget
+	}
+	if body.NetworkReuseCooldownMS != nil {
+		project.Defaults.NetworkReuseCooldownMS = *body.NetworkReuseCooldownMS
 	}
 	if body.CooldownMS != nil {
 		project.Defaults.CooldownMS = *body.CooldownMS
@@ -383,8 +404,14 @@ func sourceScopeFromOptional(f optionalStringSlice) ([]string, *domain.Error) {
 }
 
 func (s *Server) validateProject(p *domain.Project) *domain.Error {
+	if p.Defaults.AutoPrewarmTarget < 0 || p.Defaults.AutoPrewarmTarget > 1000 {
+		return domain.InvalidRequest("auto_prewarm_target must be within 0..1000 (0 disables automatic replenishment)")
+	}
 	if strings.TrimSpace(p.Name) == "" || len(p.Name) > maxProjectNameLen {
 		return domain.InvalidRequest("project name must be 1-%d characters", maxProjectNameLen)
+	}
+	if p.Defaults.NetworkReuseCooldownMS < 0 || p.Defaults.NetworkReuseCooldownMS > s.cfg.MaxDownstreamCooldownMS {
+		return domain.InvalidRequest("network_reuse_cooldown_ms must be within 0..%d (0 uses the 30-minute default)", s.cfg.MaxDownstreamCooldownMS)
 	}
 	if p.Defaults.CooldownMS < 0 || p.Defaults.CooldownMS > s.cfg.MaxDownstreamCooldownMS {
 		return domain.InvalidRequest("cooldown_ms must be between 0 and %d", s.cfg.MaxDownstreamCooldownMS)

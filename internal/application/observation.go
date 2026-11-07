@@ -14,6 +14,14 @@ import (
 // Geo failures never affect delivery: the probe evidence is already complete.
 func recordObservation(ctx context.Context, store *sqlite.Store, geo geoip.Resolver,
 	resourceID string, ev domain.Evidence, now time.Time) *domain.Observation {
+	obs := buildObservation(geo, ev, now)
+	if obs != nil {
+		_ = store.UpsertObservation(ctx, resourceID, *obs)
+	}
+	return obs
+}
+
+func buildObservation(geo geoip.Resolver, ev domain.Evidence, now time.Time) *domain.Observation {
 	if ev.ObservedExitIP == "" {
 		return nil
 	}
@@ -28,6 +36,5 @@ func recordObservation(ctx context.Context, store *sqlite.Store, geo geoip.Resol
 			}
 		}
 	}
-	_ = store.UpsertObservation(ctx, resourceID, obs)
 	return &obs
 }

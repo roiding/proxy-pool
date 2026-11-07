@@ -1,0 +1,2395 @@
+{
+  "environment": {
+    "date": "2026-11-05",
+    "timezone": "Asia/Shanghai",
+    "fetch_egress": "direct pinned DNS; no environment/system proxy",
+    "source_tls_verified": true,
+    "proxy_tls_target": "example.com:443",
+    "second_target": "www.baidu.com:443 (cloud proxy diagnostic only)",
+    "target_baseline": [
+      {
+        "address_family": "ipv4-preferred",
+        "error": "<nil>",
+        "ok": true,
+        "status": 200,
+        "target": "example.com"
+      },
+      {
+        "address_family": "ipv4-preferred",
+        "error": "<nil>",
+        "ok": true,
+        "status": 200,
+        "target": "www.baidu.com"
+      }
+    ],
+    "local_validator_selfcheck": {
+      "pass": true,
+      "note": "owned local CONNECT proxy to real public TLS target, not a vendor acceptance"
+    },
+    "production_config_or_data_changed": false,
+    "provider_call_count": 1,
+    "webshare_configured_accounts": 0
+  },
+  "runs": [
+    {
+      "run": "freeproxy-http-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:22:08.196137Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "freeproxy-http",
+            "name": "Free-Proxy-List(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "freeproxy_html_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "network: source request timed out",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 8000
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "freeproxy-http",
+      "report": {
+        "checked_at": "2026-11-05T02:12:37.643283Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "freeproxy-http",
+            "name": "Free-Proxy-List(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "freeproxy_html_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "network: source request timed out",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 8001
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "geonode-http-final",
+      "report": {
+        "checked_at": "2026-11-05T02:29:41.79539Z",
+        "sample_seed": 20261106,
+        "sites": [
+          {
+            "site_id": "geonode-http",
+            "name": "Geonode(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "geonode_json_v1",
+            "fetch_ok": true,
+            "entries": 26,
+            "fetched": 26,
+            "rejected": 31,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": false,
+            "sampled": true,
+            "source_updated_at": "2026-11-05T02:22:41Z",
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "target": "example.com:443",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "fail_reasons": {
+                "connection_refused": 2,
+                "timeout": 3
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 10108
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "geonode-http-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:21:11.649957Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "geonode-http",
+            "name": "Geonode(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "geonode_json_v1",
+            "fetch_ok": true,
+            "entries": 26,
+            "fetched": 26,
+            "rejected": 33,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": false,
+            "sampled": true,
+            "source_updated_at": "2026-11-05T02:19:16Z",
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 10447
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "geonode-http",
+      "report": {
+        "checked_at": "2026-11-05T02:12:09.699306Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "geonode-http",
+            "name": "Geonode(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "geonode_json_v1",
+            "fetch_ok": true,
+            "entries": 27,
+            "fetched": 27,
+            "rejected": 33,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": false,
+            "sampled": true,
+            "source_updated_at": "2026-11-05T02:10:49Z",
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "sample": 3,
+              "attempted": 3,
+              "pass": 0,
+              "fail": 3,
+              "fail_kinds": {
+                "PROXY": 2,
+                "TARGET": 1
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 10983
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "geonode-socks5-final",
+      "report": {
+        "checked_at": "2026-11-05T02:29:53.150676Z",
+        "sample_seed": 20261106,
+        "sites": [
+          {
+            "site_id": "geonode-socks5",
+            "name": "Geonode(SOCKS5)",
+            "catalog_state": "active",
+            "protocol": "socks5",
+            "parser_version": "geonode_json_v1",
+            "fetch_ok": true,
+            "entries": 17,
+            "fetched": 17,
+            "rejected": 40,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": false,
+            "sampled": true,
+            "source_updated_at": "2026-11-05T02:27:46Z",
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "target": "example.com:443",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "fail_reasons": {
+                "connection_refused": 2,
+                "timeout": 3
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 10322
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "geonode-socks5-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:21:25.882651Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "geonode-socks5",
+            "name": "Geonode(SOCKS5)",
+            "catalog_state": "active",
+            "protocol": "socks5",
+            "parser_version": "geonode_json_v1",
+            "fetch_ok": true,
+            "entries": 14,
+            "fetched": 14,
+            "rejected": 45,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": false,
+            "sampled": true,
+            "source_updated_at": "2026-11-05T02:19:25Z",
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 13195
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "ihuan-free-final",
+      "report": {
+        "checked_at": "2026-11-05T02:30:20.353767Z",
+        "sample_seed": 20261106,
+        "sites": [
+          {
+            "site_id": "ihuan-free",
+            "name": "小幻免费代理",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "ihuan_html_v1",
+            "fetch_ok": true,
+            "entries": 18,
+            "fetched": 18,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": true,
+            "sampled": false,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "target": "example.com:443",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "fail_reasons": {
+                "connection_refused": 1,
+                "invalid_proxy_protocol": 1,
+                "timeout": 3
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 9543
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "ihuan-free-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:22:31.173955Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "ihuan-free",
+            "name": "小幻免费代理",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "ihuan_html_v1",
+            "fetch_ok": true,
+            "entries": 18,
+            "fetched": 18,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": true,
+            "sampled": false,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 12894
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "ihuan-free",
+      "report": {
+        "checked_at": "2026-11-05T02:12:38.855341Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "ihuan-free",
+            "name": "小幻免费代理",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "ihuan_html_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "format: page 1 response did not match parser ihuan_html",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 169
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "ip3366-baidu",
+      "report": {
+        "checked_at": "2026-11-05T02:24:46.890731Z",
+        "sample_seed": 20261106,
+        "sites": [
+          {
+            "site_id": "ip3366-normal",
+            "name": "云代理(普通)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "table_2col_v1",
+            "fetch_ok": true,
+            "entries": 15,
+            "fetched": 15,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": false,
+            "sampled": true,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "target": "www.baidu.com:443",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "fail_reasons": {
+                "connection_refused": 1,
+                "timeout": 4
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 12167
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "ip3366-normal-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:22:57.218637Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "ip3366-normal",
+            "name": "云代理(普通)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "table_2col_v1",
+            "fetch_ok": true,
+            "entries": 15,
+            "fetched": 15,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": false,
+            "sampled": true,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 15170
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "ip3366-normal",
+      "report": {
+        "checked_at": "2026-11-05T02:12:53.014546Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "ip3366-normal",
+            "name": "云代理(普通)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "table_2col_v1",
+            "fetch_ok": true,
+            "entries": 15,
+            "fetched": 15,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": false,
+            "sampled": true,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "sample": 3,
+              "attempted": 3,
+              "pass": 0,
+              "fail": 3,
+              "fail_kinds": {
+                "PROXY": 3
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 6227
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "ip89-final",
+      "report": {
+        "checked_at": "2026-11-05T02:30:34.00661Z",
+        "sample_seed": 20261106,
+        "sites": [
+          {
+            "site_id": "ip89",
+            "name": "89免费代理",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "text_v1",
+            "fetch_ok": true,
+            "entries": 2996,
+            "fetched": 2996,
+            "rejected": 4,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": true,
+            "sampled": false,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "target": "example.com:443",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "fail_reasons": {
+                "connection_refused": 1,
+                "timeout": 4
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 12591
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "ip89-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:22:39.741988Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "ip89",
+            "name": "89免费代理",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "text_v1",
+            "fetch_ok": true,
+            "entries": 2997,
+            "fetched": 2997,
+            "rejected": 3,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": true,
+            "sampled": false,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 3,
+                "TARGET": 2
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 7525
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "ip89-html-accepted",
+      "report": {
+        "checked_at": "2026-11-05T02:33:23.855153Z",
+        "sample_seed": 20261106,
+        "sites": [
+          {
+            "site_id": "ip89-html",
+            "name": "89免费代理(HTML)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "ip89_html_v1",
+            "fetch_ok": true,
+            "entries": 40,
+            "fetched": 40,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": true,
+            "sampled": false,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "target": "example.com:443",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 4,
+                "TARGET": 1
+              },
+              "fail_reasons": {
+                "connect_http_403": 1,
+                "connection_refused": 1,
+                "timeout": 3
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 9618
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "ip89-html-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:22:41.011472Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "ip89-html",
+            "name": "89免费代理(HTML)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "ip89_html_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "format: page 1 response did not match parser ip89_html",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 198
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "ip89",
+      "report": {
+        "checked_at": "2026-11-05T02:12:45.746695Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "ip89",
+            "name": "89免费代理",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "text_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "format: page 1 response did not match parser text",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 5862
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "jiliuip-elite-final",
+      "report": {
+        "checked_at": "2026-11-05T02:30:50.560067Z",
+        "sample_seed": 20261106,
+        "sites": [
+          {
+            "site_id": "jiliuip-elite",
+            "name": "积流代理(高匿)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "role_cells_v1",
+            "fetch_ok": true,
+            "entries": 9,
+            "fetched": 10,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": false,
+            "sampled": true,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "target": "example.com:443",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "fail_reasons": {
+                "invalid_proxy_protocol": 1,
+                "other_proxy": 1,
+                "timeout": 3
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 15505
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "jiliuip-elite-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:23:15.643647Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "jiliuip-elite",
+            "name": "积流代理(高匿)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "role_cells_v1",
+            "fetch_ok": true,
+            "entries": 9,
+            "fetched": 10,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": false,
+            "sampled": true,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 17388
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "jiliuip-elite",
+      "report": {
+        "checked_at": "2026-11-05T02:13:05.604407Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "jiliuip-elite",
+            "name": "积流代理(高匿)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "role_cells_v1",
+            "fetch_ok": true,
+            "entries": 9,
+            "fetched": 10,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": false,
+            "sampled": true,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "sample": 3,
+              "attempted": 3,
+              "pass": 0,
+              "fail": 3,
+              "fail_kinds": {
+                "PROXY": 2,
+                "TARGET": 1
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 11549
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "lumiproxy-elite-final",
+      "report": {
+        "checked_at": "2026-11-05T02:30:59.607587Z",
+        "sample_seed": 20261106,
+        "sites": [
+          {
+            "site_id": "lumiproxy-elite",
+            "name": "LumiProxy(高匿)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "json_list_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "network: source request timed out",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 8000
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "lumiproxy-elite-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:23:35.371505Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "lumiproxy-elite",
+            "name": "LumiProxy(高匿)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "json_list_v1",
+            "fetch_ok": true,
+            "entries": 19,
+            "fetched": 19,
+            "rejected": 41,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": false,
+            "sampled": true,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 18684
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "lumiproxy-elite",
+      "report": {
+        "checked_at": "2026-11-05T02:13:21.045154Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "lumiproxy-elite",
+            "name": "LumiProxy(高匿)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "json_list_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "network: source request timed out",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 8000
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "monosans-http-final",
+      "report": {
+        "checked_at": "2026-11-05T02:29:13.614036Z",
+        "sample_seed": 20261106,
+        "sites": [
+          {
+            "site_id": "monosans-http",
+            "name": "monosans(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "lines_v1",
+            "fetch_ok": true,
+            "entries": 2016,
+            "fetched": 2016,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": true,
+            "sampled": false,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "target": "example.com:443",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "fail_reasons": {
+                "timeout": 5
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 15860
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "monosans-http-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:21:34.92458Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "monosans-http",
+            "name": "monosans(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "lines_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "network: source request timed out",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 8001
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "monosans-http",
+      "report": {
+        "checked_at": "2026-11-05T02:12:19.567354Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "monosans-http",
+            "name": "monosans(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "lines_v1",
+            "fetch_ok": true,
+            "entries": 2069,
+            "fetched": 2069,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": true,
+            "sampled": false,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "sample": 3,
+              "attempted": 3,
+              "pass": 0,
+              "fail": 3,
+              "fail_kinds": {
+                "PROXY": 2,
+                "TARGET": 1
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 8815
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "monosans-socks5-final",
+      "report": {
+        "checked_at": "2026-11-05T02:29:30.649689Z",
+        "sample_seed": 20261106,
+        "sites": [
+          {
+            "site_id": "monosans-socks5",
+            "name": "monosans(SOCKS5)",
+            "catalog_state": "active",
+            "protocol": "socks5",
+            "parser_version": "lines_v1",
+            "fetch_ok": true,
+            "entries": 1793,
+            "fetched": 1793,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": true,
+            "sampled": false,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "target": "example.com:443",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "fail_reasons": {
+                "timeout": 5
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 15994
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "monosans-socks5-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:21:43.98154Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "monosans-socks5",
+            "name": "monosans(SOCKS5)",
+            "catalog_state": "active",
+            "protocol": "socks5",
+            "parser_version": "lines_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "network: source request timed out",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 8003
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "openproxylist-http-final",
+      "report": {
+        "checked_at": "2026-11-05T02:28:39.948295Z",
+        "sample_seed": 20261106,
+        "sites": [
+          {
+            "site_id": "openproxylist-http",
+            "name": "OpenProxyList(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "lines_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "network: source request timed out",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 8001
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "openproxylist-http-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:20:23.867805Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "openproxylist-http",
+            "name": "OpenProxyList(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "lines_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "network: source request timed out",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 8002
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "openproxylist-http",
+      "report": {
+        "checked_at": "2026-11-05T02:10:59.804157Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "openproxylist-http",
+            "name": "OpenProxyList(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "lines_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "network: source request timed out",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 8000
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "openproxylist-https-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:20:43.55128Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "openproxylist-https",
+            "name": "OpenProxyList(HTTPS)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "lines_v1",
+            "fetch_ok": true,
+            "entries": 8687,
+            "fetched": 8687,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": true,
+            "sampled": false,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 18644
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "openproxylist-https",
+      "report": {
+        "checked_at": "2026-11-05T02:14:14.510139Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "openproxylist-https",
+            "name": "OpenProxyList(HTTPS)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "lines_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "network: source request timed out",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 8006
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "proxyscrape-http-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:23:44.422204Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "proxyscrape-http",
+            "name": "ProxyScrape(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "lines_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "network: source request timed out",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 8001
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "proxyscrape-http",
+      "report": {
+        "checked_at": "2026-11-05T02:11:57.672291Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "proxyscrape-http",
+            "name": "ProxyScrape(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "lines_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "network: source request timed out",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 8001
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "proxyscrape-last-fetch",
+      "report": {
+        "checked_at": "2026-11-05T02:35:14.798617Z",
+        "sample_seed": 1,
+        "sites": [
+          {
+            "site_id": "proxyscrape-http",
+            "name": "ProxyScrape(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "lines_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "network: source request timed out",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 8000
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "proxyscrape-socks5-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:23:53.470625Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "proxyscrape-socks5",
+            "name": "ProxyScrape(SOCKS5)",
+            "catalog_state": "active",
+            "protocol": "socks5",
+            "parser_version": "lines_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "network: source request timed out",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 8002
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "qiyunip-accepted",
+      "report": {
+        "checked_at": "2026-11-05T02:35:06.707934Z",
+        "sample_seed": 20261106,
+        "sites": [
+          {
+            "site_id": "qiyunip-elite",
+            "name": "齐云代理(高匿)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "table_th_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "access: page 1 returned HTTP 403",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 256
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "qiyunip-elite",
+      "report": {
+        "checked_at": "2026-11-05T02:13:12.011249Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "qiyunip-elite",
+            "name": "齐云代理(高匿)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "table_th_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "access: page 1 returned HTTP 403",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 5372
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "roosterkid-https-final",
+      "report": {
+        "checked_at": "2026-11-05T02:28:56.723189Z",
+        "sample_seed": 20261106,
+        "sites": [
+          {
+            "site_id": "roosterkid-https",
+            "name": "roosterkid(HTTPS)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "lines_v1",
+            "fetch_ok": true,
+            "entries": 150,
+            "fetched": 150,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": true,
+            "sampled": false,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "target": "example.com:443",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "fail_reasons": {
+                "timeout": 5
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 15747
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "roosterkid-https",
+      "report": {
+        "checked_at": "2026-11-05T02:14:21.843892Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "roosterkid-https",
+            "name": "roosterkid(HTTPS)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "lines_v1",
+            "fetch_ok": true,
+            "entries": 150,
+            "fetched": 150,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": true,
+            "sampled": false,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "sample": 3,
+              "attempted": 3,
+              "pass": 0,
+              "fail": 3,
+              "fail_kinds": {
+                "PROXY": 2,
+                "TARGET": 1
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 7270
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "roosterkid-socks5-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:21:00.165551Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "roosterkid-socks5",
+            "name": "roosterkid(SOCKS5)",
+            "catalog_state": "active",
+            "protocol": "socks5",
+            "parser_version": "lines_v1",
+            "fetch_ok": true,
+            "entries": 9,
+            "fetched": 9,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": true,
+            "sampled": false,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 15573
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "scdn-http",
+      "report": {
+        "checked_at": "2026-11-05T02:24:46.948029Z",
+        "sample_seed": 20261105,
+        "sites": [],
+        "scdn": {
+          "ok": false,
+          "requested": 3,
+          "fetched": 0,
+          "error": "network: source request or response could not be read",
+          "note": "explicit bounded extraction; unused candidates die with this diagnostic; no inventory or liveness claim",
+          "probe": {
+            "requested": false,
+            "sample": 0,
+            "attempted": 0,
+            "pass": 0,
+            "fail": 0,
+            "all_sample_passed": false
+          }
+        },
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "socks-proxy-socks5-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:22:17.240657Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "socks-proxy-socks5",
+            "name": "Socks-Proxy(SOCKS5)",
+            "catalog_state": "active",
+            "protocol": "socks5",
+            "parser_version": "freeproxy_html_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "network: source request timed out",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 8002
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "spys-http-accepted",
+      "report": {
+        "checked_at": "2026-11-05T02:33:14.161921Z",
+        "sample_seed": 20261106,
+        "sites": [
+          {
+            "site_id": "spys-http",
+            "name": "Spys.me(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "spys_text_v1",
+            "fetch_ok": true,
+            "entries": 400,
+            "fetched": 400,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": true,
+            "sampled": false,
+            "source_updated_at": "2026-11-05T00:58:02Z",
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "target": "example.com:443",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "fail_reasons": {
+                "timeout": 5
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 19104
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "spys-http-final",
+      "report": {
+        "checked_at": "2026-11-05T02:30:09.759357Z",
+        "sample_seed": 20261106,
+        "sites": [
+          {
+            "site_id": "spys-http",
+            "name": "Spys.me(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "spys_text_v1",
+            "fetch_ok": true,
+            "entries": 296,
+            "fetched": 296,
+            "rejected": 108,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": true,
+            "sampled": false,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "target": "example.com:443",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 3,
+              "fail": 2,
+              "fail_kinds": {
+                "PROXY": 2
+              },
+              "fail_reasons": {
+                "timeout": 2
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "sample_has_pass",
+            "millis": 15562
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": true
+      }
+    },
+    {
+      "run": "spys-http-fixed",
+      "report": {
+        "checked_at": "2026-11-05T02:21:59.162928Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "spys-http",
+            "name": "Spys.me(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "spys_text_v1",
+            "fetch_ok": true,
+            "entries": 296,
+            "fetched": 296,
+            "rejected": 108,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": true,
+            "sampled": false,
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 4,
+                "TARGET": 1
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 14146
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "spys-http-full-frame-second-seed",
+      "report": {
+        "checked_at": "2026-11-05T02:37:46.525154Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "spys-http",
+            "name": "Spys.me(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "spys_text_v1",
+            "fetch_ok": true,
+            "entries": 400,
+            "fetched": 400,
+            "rejected": 0,
+            "pages_done": 1,
+            "pages_total": 1,
+            "complete": true,
+            "sampled": false,
+            "source_updated_at": "2026-11-05T00:58:02Z",
+            "probe": {
+              "requested": true,
+              "mode": "tls",
+              "target": "example.com:443",
+              "sample": 5,
+              "attempted": 5,
+              "pass": 0,
+              "fail": 5,
+              "fail_kinds": {
+                "PROXY": 5
+              },
+              "fail_reasons": {
+                "timeout": 5
+              },
+              "all_sample_passed": false
+            },
+            "verdict": "no_proxy_pass",
+            "millis": 21368
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "spys-http",
+      "report": {
+        "checked_at": "2026-11-05T02:12:28.609941Z",
+        "sample_seed": 20261105,
+        "sites": [
+          {
+            "site_id": "spys-http",
+            "name": "Spys.me(HTTP)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "spys_text_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "network: source request timed out",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 8001
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    },
+    {
+      "run": "sslproxies-accepted",
+      "report": {
+        "checked_at": "2026-11-05T02:35:06.406135Z",
+        "sample_seed": 20261106,
+        "sites": [
+          {
+            "site_id": "sslproxies-https",
+            "name": "SSLProxies(HTTPS)",
+            "catalog_state": "active",
+            "protocol": "http",
+            "parser_version": "freeproxy_html_v1",
+            "fetch_ok": false,
+            "entries": 0,
+            "fetched": 0,
+            "rejected": 0,
+            "pages_done": 0,
+            "pages_total": 0,
+            "complete": false,
+            "sampled": false,
+            "error": "network: source request timed out",
+            "probe": {
+              "requested": false,
+              "sample": 0,
+              "attempted": 0,
+              "pass": 0,
+              "fail": 0,
+              "all_sample_passed": false
+            },
+            "verdict": "fetch_failed",
+            "millis": 8001
+          }
+        ],
+        "notes": [
+          "fetch_only verifies fetching/parsing only, never proxy liveness",
+          "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+          "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+          "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+          "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+        ],
+        "all_requested_checks_passed": false
+      }
+    }
+  ],
+  "spys_repeat_subset": {
+    "attempted": 5,
+    "fail_kinds": {
+      "PROXY": 4
+    },
+    "failed": 4,
+    "frame_entries": 296,
+    "pass": 1,
+    "sampling_frame": "same no-suffix vendor marker subset as original 296-entry parser snapshot",
+    "seed": 20261106,
+    "snapshot_entries": 400,
+    "target": "example.com:443"
+  },
+  "notes": [
+    "Each public source downloaded sequentially, max one page per run; initial 3 then 5 unique shuffled sample entries. Repeated seeds and runs overlap, so pass/attempt events must not be summed as unique global candidates.",
+    "Full current Spys 400-entry frame has 0/5 on each of two seeds; an earlier 296-entry parsed subset had 3/5 and a later same subset repeat had 1/5. Keep all results; this is not a stable all-channel PASS.",
+    "SCDN explicitly called once for 3 HTTP candidates, vendor request failed before candidates were returned; no purchase/registration/account changes.",
+    "Webshare absent real account configuration; not called.",
+    "Resolver returned anomalous Meta-looking addresses for ProxyScrape/FreeProxy; independent public DNS checks were unreachable. Report local DNS/network restriction, not vendor closure."
+  ]
+}

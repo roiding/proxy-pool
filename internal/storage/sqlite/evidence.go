@@ -168,6 +168,9 @@ func (s *Store) RecentEvidence(ctx context.Context, scopeHash string,
 			if jerr := json.Unmarshal([]byte(data), &ev); jerr != nil {
 				return nil, jerr
 			}
+			if ev.Outcome != "PASS" || ev.CompletedAt.IsZero() || ev.CompletedAt.After(time.Now()) {
+				continue
+			}
 			ev.CacheHit = true
 			out[k.Fingerprint] = ev
 			continue

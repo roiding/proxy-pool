@@ -7,14 +7,16 @@ import (
 
 	"proxypool/internal/application"
 	"proxypool/internal/domain"
+	"proxypool/internal/validation"
 )
 
 type prewarmJobBody struct {
-	Count      *int                `json:"count"`
-	TimeoutSec *int64              `json:"timeout"`
-	Protocols  []string            `json:"protocols"`
-	Countries  []string            `json:"country"`
-	SourceIDs  optionalStringSlice `json:"source_ids"`
+	Count      *int                      `json:"count"`
+	TimeoutSec *int64                    `json:"timeout"`
+	Protocols  []string                  `json:"protocols"`
+	Countries  []string                  `json:"country"`
+	SourceIDs  optionalStringSlice       `json:"source_ids"`
+	Validation *acquireValidationRequest `json:"validation,omitempty"`
 }
 
 // handlePrewarmV1 creates a durable prewarm job for the caller's project and
@@ -64,6 +66,22 @@ func (s *Server) handlePrewarmV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Filters.SourceIDs = sourceIDs
+	if body.Validation != nil {
+		if body.Validation.Mode == "basic" && body.Validation.Target != "" {
+			writeError(w, domain.InvalidRequest("basic validation does not accept target"))
+			return
+		}
+		if body.Validation.Mode != "basic" && body.Validation.Mode != "tls" {
+			writeError(w, domain.InvalidRequest("validation mode must be basic or tls"))
+			return
+		}
+		scope, derr := validation.NormalizeOptions(body.Validation.Mode, body.Validation.Target)
+		if derr != nil {
+			writeError(w, derr)
+			return
+		}
+		req.Validation = &scope
+	}
 	job, derr := s.prewarm.StartJob(r.Context(), ident.ProjectID, req)
 	if derr != nil {
 		writeError(w, derr)
@@ -84,16 +102,20 @@ func (s *Server) handleJobCancelV1(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ident := identityFrom(r.Context())
-	if !ident.Admin && job.ProjectID != ident.ProjectID {
+	if !ident.Admin && (job.ProjectID != ident.ProjectID || job.Kind != application.PrewarmJobKind) {
 		writeError(w, domain.NotFound("job"))
 		return
 	}
-	if job.Kind != "prewarm" {
+	if job.Kind == application.SourceRefreshJobKind {
+		if derr := s.refresh.CancelJob(r.Context(), id); derr != nil {
+			writeError(w, derr)
+			return
+		}
+	} else if job.Kind != "prewarm" {
 		writeError(w, domain.E("JOB_KIND_UNSUPPORTED", 409,
 			"job kind %q cannot be cancelled through this endpoint", job.Kind))
 		return
-	}
-	if derr := s.prewarm.CancelJob(r.Context(), id); derr != nil {
+	} else if derr := s.prewarm.CancelJob(r.Context(), id); derr != nil {
 		writeError(w, derr)
 		return
 	}
@@ -136,6 +158,9 @@ func (s *Server) handleListJobsAdmin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeStoreError(w, err)
 		return
+	}
+	if jobs == nil {
+		jobs = []domain.Job{}
 	}
 	writeJSON(w, http.StatusOK, jobs)
 }

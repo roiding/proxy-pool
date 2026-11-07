@@ -1,0 +1,22 @@
+{
+  "release": "unified-20261105-db86196c23dc",
+  "checked_at": "2026-11-05T16:01:36.702010+00:00",
+  "source_content_sha256": "db86196c23dc56c0fdb59c6e4a0e3c93f985a101e248bb0b2d23e421c279203e",
+  "local_full_normal": "PASS",
+  "local_full_race": "PASS",
+  "local_full_vet": "PASS",
+  "revised_offline_fixture_normal_and_race": "PASS",
+  "linux_full_normal": "PASS",
+  "linux_full_vet": "PASS",
+  "linux_static_amd64_binaries": "PASS",
+  "isolated_database_migration": "PASS",
+  "controlled_ui_and_auto_prewarm": "PASS",
+  "admin_javascript_syntax": "PASS",
+  "public_https_and_signed_judge": "PASS after one transient public Judge timeout",
+  "cleanup": {
+    "buildtools_image_removed": true,
+    "build_cache_removed": true,
+    "local_qa_processes_stopped": true
+  },
+  "committed_or_pushed": false
+}

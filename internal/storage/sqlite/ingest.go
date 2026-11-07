@@ -544,6 +544,16 @@ func (s *Store) RetireResourceOwned(ctx context.Context, resourceID, incarnation
 		if revoked == 0 && sourceID != "" {
 			return nil
 		}
+		// A failed owned offer must not delete a sibling upload source's
+		// independent offer/resource row for the same physical connection.
+		var remaining int
+		if err := t.QueryRowContext(ctx, `SELECT COUNT(*) FROM source_offers
+		  WHERE resource_id = ?`, resourceID).Scan(&remaining); err != nil {
+			return err
+		}
+		if remaining > 0 {
+			return nil
+		}
 		guard := `resource_id IN (
 		  SELECT resource_id FROM proxy_resources WHERE resource_id = ?`
 		guardArgs := []any{resourceID}
@@ -629,6 +639,18 @@ type DailyStat struct {
 // transaction; RecordAttemptAttributed returns a clear store error if an
 // older deployment skipped it.
 func ensureSupplySchemaTx(ctx context.Context, t *sql.Tx) error {
+	if err := ensureSourceBlacklistSchemaTx(ctx, t); err != nil {
+		return err
+	}
+	if err := ensurePoolMaintenanceSchemaTx(ctx, t); err != nil {
+		return err
+	}
+	if err := ensureSourceFetchSchemaTx(ctx, t); err != nil {
+		return err
+	}
+	if err := ensureSourceAccountsSchemaTx(ctx, t); err != nil {
+		return err
+	}
 	_, err := t.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS validation_attempt_sources (
 		  attempt_id TEXT PRIMARY KEY,
@@ -651,6 +673,11 @@ func ensureSupplySchemaTx(ctx context.Context, t *sql.Tx) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_source_stats_day
 		  ON source_stat_counters(day, source_id);
+		-- Earlier releases incorrectly treated individual list proxy failures
+		-- as failures of the complete channel. Fetch backoff is independent.
+		DELETE FROM source_circuits WHERE source_id IN (
+		  SELECT source_id FROM sources WHERE adapter_type IN ('site_fetch','static_url','account_list','provider_api')
+		);
 		CREATE TABLE IF NOT EXISTS source_version_watermarks (
 		  source_id TEXT PRIMARY KEY,
 		  last_version INTEGER NOT NULL
@@ -797,7 +824,9 @@ func (s *Store) DailySourceStats(ctx context.Context, from, to time.Time) ([]Dai
 }
 
 type SourceOverview struct {
+	ConfigJSON    string  `json:"-"`
 	SourceID      string  `json:"source_id"`
+	ConfigVersion int64   `json:"config_version"`
 	AdapterType   string  `json:"adapter_type"`
 	ParserType    string  `json:"parser_type"`
 	Enabled       bool    `json:"enabled"`
@@ -805,6 +834,8 @@ type SourceOverview struct {
 	EnabledOffers int64   `json:"enabled_offers"`
 	HealthPass    int64   `json:"health_pass"`
 	HealthFail    int64   `json:"health_fail"`
+	AttemptPass   int64   `json:"attempt_pass"`
+	AttemptFail   int64   `json:"attempt_fail"`
 	LastValidated *string `json:"last_validated_at"`
 	CircuitState  string  `json:"circuit_state"`
 	CooldownUntil *string `json:"source_cooldown_until"`
@@ -812,12 +843,18 @@ type SourceOverview struct {
 
 func (s *Store) SourcesOverview(ctx context.Context) ([]SourceOverview, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT s.source_id, s.adapter_type, s.parser_type, s.enabled,
+		SELECT s.source_id, s.config_json, s.config_version, s.adapter_type, s.parser_type, s.enabled,
 		       COALESCE(o.offers, 0), COALESCE(o.enabled_offers, 0),
 		       COALESCE(h.health_pass, 0), COALESCE(h.health_fail, 0),
-		       va.last_validated, COALESCE(sc.state, 'CLOSED'), sc.cooldown_until
+		       COALESCE(a.last_validated, va.last_validated), COALESCE(sc.state, 'CLOSED'), sc.cooldown_until,
+		       COALESCE(a.attempt_pass, 0), COALESCE(a.attempt_fail, 0)
 		FROM sources s
 		LEFT JOIN source_circuits sc ON sc.source_id = s.source_id
+		LEFT JOIN (
+		  SELECT source_id, source_config_version, SUM(outcome = 'PASS') AS attempt_pass,
+		         SUM(outcome = 'FAIL') AS attempt_fail, MAX(completed_at) AS last_validated
+		  FROM validation_attempt_sources GROUP BY source_id, source_config_version
+		) a ON a.source_id = s.source_id AND a.source_config_version = s.config_version
 		LEFT JOIN (
 		  SELECT source_id, COUNT(*) AS offers, SUM(state = 'ENABLED') AS enabled_offers
 		  FROM source_offers GROUP BY source_id
@@ -847,8 +884,8 @@ func (s *Store) SourcesOverview(ctx context.Context) ([]SourceOverview, error) {
 		var o SourceOverview
 		var enabled int
 		var lastValidated, cooldown any
-		if err := rows.Scan(&o.SourceID, &o.AdapterType, &o.ParserType, &enabled, &o.Offers, &o.EnabledOffers,
-			&o.HealthPass, &o.HealthFail, &lastValidated, &o.CircuitState, &cooldown); err != nil {
+		if err := rows.Scan(&o.SourceID, &o.ConfigJSON, &o.ConfigVersion, &o.AdapterType, &o.ParserType, &enabled, &o.Offers, &o.EnabledOffers,
+			&o.HealthPass, &o.HealthFail, &lastValidated, &o.CircuitState, &cooldown, &o.AttemptPass, &o.AttemptFail); err != nil {
 			return nil, mapErr(err)
 		}
 		o.Enabled = enabled == 1
@@ -868,6 +905,7 @@ func (s *Store) SourcesOverview(ctx context.Context) ([]SourceOverview, error) {
 }
 
 type SelectionFilters struct {
+	ProjectID    string
 	Profile      string
 	Now          time.Time
 	UsefulCutoff time.Time
@@ -895,7 +933,7 @@ func (s *Store) StaticBatchLive(ctx context.Context, sourceID string,
 	var actualVersion int64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT enabled, config_version FROM sources
-		WHERE source_id = ? AND adapter_type IN ('site_fetch','static_url')`,
+		WHERE source_id = ? AND adapter_type IN ('site_fetch','static_url','account_list','provider_api')`,
 		sourceID).Scan(&enabled, &actualVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -954,6 +992,10 @@ func (s *Store) SelectCandidates(ctx context.Context, f SelectionFilters) ([]dom
 		for _, v := range f.Transports {
 			args = append(args, string(v))
 		}
+	}
+	if f.ProjectID != "" {
+		query += sourceProjectAccessClause
+		args = append(args, f.ProjectID)
 	}
 	if len(f.Kinds) > 0 {
 		query += " AND r.resource_kind IN (" + placeholders(len(f.Kinds)) + ")"
@@ -1069,6 +1111,24 @@ func (s *Store) ExpireBindingsForFingerprints(ctx context.Context,
 		SET state = 'INVALID', connection_ciphertext = '', updated_at = ?
 		WHERE state = 'ACTIVE'
 		  AND fingerprint IN (`+placeholders(len(fingerprints))+`)`, args...)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	return n, mapErr(err)
+}
+
+// ExpireListBindingsOwned clears only snapshots of the exact current source
+// configuration that explicitly rejected authentication. A delayed old list
+// result cannot invalidate another source or a recreated/rotated account.
+// It does not delete inventory, leases, project CD, or future list records.
+func (s *Store) ExpireListBindingsOwned(ctx context.Context, sourceID string,
+	version int64, fingerprint string, now time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE sticky_bindings
+	 SET state='INVALID',connection_ciphertext='',updated_at=?
+	 WHERE state='ACTIVE' AND source_id=? AND source_config_version=? AND fingerprint=?
+	 AND EXISTS(SELECT 1 FROM sources WHERE source_id=? AND enabled=1 AND config_version=?)`,
+		fmtTime(now), sourceID, version, fingerprint, sourceID, version)
 	if err != nil {
 		return 0, mapErr(err)
 	}

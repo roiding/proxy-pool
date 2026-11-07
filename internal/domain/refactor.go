@@ -15,9 +15,11 @@ type ValidationScope struct {
 }
 
 type ProjectDefaults struct {
-	CooldownMS int64           `json:"cooldown_ms"`
-	TimeoutMS  int64           `json:"timeout_ms"`
-	Validation ValidationScope `json:"validation"`
+	AutoPrewarmTarget      int             `json:"auto_prewarm_target"`
+	NetworkReuseCooldownMS int64           `json:"network_reuse_cooldown_ms"`
+	CooldownMS             int64           `json:"cooldown_ms"`
+	TimeoutMS              int64           `json:"timeout_ms"`
+	Validation             ValidationScope `json:"validation"`
 }
 
 type Project struct {
@@ -78,6 +80,9 @@ func (p Project) FilterAllowedSources(requested []string) []string {
 	if p.AllowedSourceIDs == nil {
 		return requested
 	}
+	if requested == nil {
+		return append([]string{}, p.AllowedSourceIDs...)
+	}
 	out := make([]string, 0, len(requested))
 	for _, id := range requested {
 		if p.SourceAllowed(id) {
@@ -103,6 +108,7 @@ func EvidenceScopeHash(scope ValidationScope) string {
 }
 
 type Job struct {
+	Automatic  bool       `json:"automatic,omitempty"`
 	ID         string     `json:"job_id"`
 	ProjectID  string     `json:"project_id"`
 	Kind       string     `json:"kind"`

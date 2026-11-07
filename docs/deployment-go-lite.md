@@ -1,7 +1,9 @@
 # Low-Memory Go Deployment Profile
 
 Version: 0.7. Status: CI-gated native release profile documented; RSS
-benchmarks and an actual target-host deployment are still pending.
+benchmarks remain pending. The existing Huawei Docker deployment was upgraded
+on 2026-11-05; see [the actual deployment record](deployment-huawei-channels-2026-11-05.md).
+The native/systemd instructions below remain a separate deployment profile.
 
 Target: one Huawei Cloud Flexus L instance, 2 CPU cores, 1 GiB RAM. The reported
 1024-G traffic allowance does not change the memory budget. This service

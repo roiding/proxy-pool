@@ -1,0 +1,149 @@
+{
+  "stopped_at": "2026-11-06T11:20:33.836757313Z",
+  "observed_at": "2026-11-06T11:26:45.093487+00:00",
+  "container_status": "exited",
+  "container_pid": 0,
+  "restart_policy": "no",
+  "image": "proxy-pool:unified-20261105-db86196c23dc",
+  "image_id": "sha256:23a9dd610a4c083072a7bbe8d3e54e12e790be57680ad11036ad1ea185608dd7",
+  "backup": "/opt/proxy-pool/backups/supply-wait-upload-20261106T112640Z",
+  "checksums": {
+    "config.json": "b875c007c4058a4a1681115f651b359b7a15b1f7e521d0ab163610e11acceae7",
+    "data/config.json": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "data/geoip-city.mmdb": "9e250f02722d1ad1780f88192f0e908af285478a33e76b88b349c9181ae9d0f5",
+    "data/proxy-pool.db": "d5060e9f6fca1478cc09a55990dce4e7bbd21e2093b0a34c176805dddb1aab4e",
+    "data/proxy-pool.lock": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "docker-compose.yml": "e79f74b524e23d51ffa449e4fd73b7e007245b70709a3663a5985bbbce103c4b"
+  },
+  "quick_check": [
+    "ok"
+  ],
+  "foreign_key_errors": [],
+  "counts": {
+    "sources": 4,
+    "leases": 19,
+    "projects": 1,
+    "api_keys": 0,
+    "upload_keys": 0,
+    "jobs": 1606,
+    "pool_maintenance_jobs": 1585
+  },
+  "projects": [
+    {
+      "project_id": "default",
+      "enabled": 1,
+      "auto_prewarm_target": 100,
+      "config_version": 2
+    }
+  ],
+  "sources": [
+    {
+      "source_id": "spys-http",
+      "adapter_type": "site_fetch",
+      "enabled": 1,
+      "config_version": 2,
+      "refresh_mode": "demand"
+    },
+    {
+      "source_id": "scdn-http",
+      "adapter_type": "provider_api",
+      "enabled": 1,
+      "config_version": 3,
+      "refresh_mode": null
+    },
+    {
+      "source_id": "proxyscrape-elite",
+      "adapter_type": "site_fetch",
+      "enabled": 1,
+      "config_version": 2,
+      "refresh_mode": "demand"
+    },
+    {
+      "source_id": "freeproxy-http",
+      "adapter_type": "site_fetch",
+      "enabled": 1,
+      "config_version": 2,
+      "refresh_mode": "demand"
+    }
+  ],
+  "recent_automatic_jobs": [
+    {
+      "state": "COMPLETED",
+      "stop_reason": "target_met",
+      "count": 1,
+      "probed": 17,
+      "failed": 14
+    },
+    {
+      "state": "PARTIAL",
+      "stop_reason": "deadline",
+      "count": 72,
+      "probed": 21113,
+      "failed": 19935
+    },
+    {
+      "state": "PARTIAL",
+      "stop_reason": "inventory_exhausted",
+      "count": 927,
+      "probed": 4114,
+      "failed": 3992
+    }
+  ],
+  "last_automatic_jobs": [
+    {
+      "job_id": "warm_c399dca658c1defdf8342ca9",
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 35,
+      "probed": 0,
+      "failed": 0,
+      "stop_reason": "inventory_exhausted",
+      "created_at": "2026-11-06T11:20:12.669616271Z",
+      "finished_at": "2026-11-06T11:20:12.860620147Z"
+    },
+    {
+      "job_id": "warm_d0f3403935ad7d7416dfd368",
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 35,
+      "probed": 0,
+      "failed": 0,
+      "stop_reason": "inventory_exhausted",
+      "created_at": "2026-11-06T11:19:37.673835275Z",
+      "finished_at": "2026-11-06T11:19:37.841156871Z"
+    },
+    {
+      "job_id": "warm_9adb9677608e2b83c4af2904",
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 35,
+      "probed": 0,
+      "failed": 0,
+      "stop_reason": "inventory_exhausted",
+      "created_at": "2026-11-06T11:19:02.664935402Z",
+      "finished_at": "2026-11-06T11:19:02.844391851Z"
+    },
+    {
+      "job_id": "warm_21392ff6132bd0a9b17e7972",
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 35,
+      "probed": 0,
+      "failed": 0,
+      "stop_reason": "inventory_exhausted",
+      "created_at": "2026-11-06T11:18:27.666631258Z",
+      "finished_at": "2026-11-06T11:18:27.836724166Z"
+    },
+    {
+      "job_id": "warm_051a6599a11d4d38df2d551e",
+      "state": "PARTIAL",
+      "target": 100,
+      "ready": 35,
+      "probed": 0,
+      "failed": 0,
+      "stop_reason": "inventory_exhausted",
+      "created_at": "2026-11-06T11:17:52.666325613Z",
+      "finished_at": "2026-11-06T11:17:52.846241742Z"
+    }
+  ]
+}

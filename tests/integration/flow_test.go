@@ -292,7 +292,7 @@ func TestFailingProxyCooldownsInsteadOfRetrying(t *testing.T) {
 	}
 }
 
-func TestJudgeOutageIsInconclusiveAndNotAttributed(t *testing.T) {
+func TestCompletedFailedValidationDeletesUploadAndReuploadRestoresSupply(t *testing.T) {
 	j := startJudge(t)
 	proxy := startFakeProxy(t)
 	e := newEnv(t, j, nil)
@@ -304,6 +304,7 @@ func TestJudgeOutageIsInconclusiveAndNotAttributed(t *testing.T) {
 		t.Fatalf("judge outage must be an inconclusive shortfall: %v %+v", derr, missing)
 	}
 	j.healthy.Store(true)
+	e.importProxy(t, "manual", fmt.Sprintf("http://127.0.0.1:%d", portOf(proxy.URL)))
 	result, derr := e.acquire.Acquire(context.Background(), application.AcquireRequest{Count: 1})
 	if derr != nil || result.Delivered != 1 {
 		t.Fatalf("acquire after judge recovery: %v %+v", derr, result)
@@ -609,7 +610,7 @@ func TestAPIEndToEnd(t *testing.T) {
 	}
 }
 
-func TestNightlyValidationKeepsUncertainFailures(t *testing.T) {
+func TestNightlyValidationDeletesFailedUploadsAndReuploadIsUnvalidated(t *testing.T) {
 	j := startJudge(t)
 	e := newEnv(t, j, func(c *config.Config) { c.NightlyRetireFailures = 1 })
 	goodProxy := startFakeProxy(t)
@@ -626,21 +627,21 @@ func TestNightlyValidationKeepsUncertainFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("nightly run: %v", err)
 	}
-	if probed != 2 || retired != 0 {
-		t.Fatalf("connection refusal is not proof of permanent death: probed=%d retired=%d", probed, retired)
+	if probed != 2 || retired != 1 {
+		t.Fatalf("completed connection refusal must remove the uploaded candidate: probed=%d retired=%d", probed, retired)
 	}
 	stats, err := e.store.Stats(context.Background())
 	if err != nil {
 		t.Fatalf("stats: %v", err)
 	}
-	if stats.HealthPass != 1 || stats.HealthFail != 1 || stats.EnabledOffers != 2 ||
-		stats.Resources != 2 {
-		t.Fatalf("uncertain candidate must remain available for later retest: %+v", stats)
+	if stats.HealthPass != 1 || stats.HealthFail != 0 || stats.EnabledOffers != 1 ||
+		stats.Resources != 1 {
+		t.Fatalf("failed candidate was not removed while good candidate was retained: %+v", stats)
 	}
 
 	// Re-uploading must merge without resetting either candidate's health.
 	reimport, derr := e.ingest.ImportLines(context.Background(), "manual", content)
-	if derr != nil || reimport.Skipped != 0 || reimport.Updated != 2 || reimport.Added != 0 {
+	if derr != nil || reimport.Skipped != 0 || reimport.Updated != 1 || reimport.Added != 1 {
 		t.Fatalf("re-upload after uncertainty: %v %+v", derr, reimport)
 	}
 
@@ -1009,14 +1010,14 @@ func TestManualSourceValidationViaAPI(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if status.Probed != 2 || status.Retired != 0 || status.Mode != "manual" {
+	if status.Probed != 2 || status.Retired != 1 || status.Mode != "manual" {
 		t.Fatalf("validation status: %+v", status)
 	}
 	stats, err := e.store.Stats(context.Background())
 	if err != nil {
 		t.Fatalf("stats: %v", err)
 	}
-	if stats.HealthPass != 1 || stats.HealthFail != 1 {
+	if stats.HealthPass != 1 || stats.HealthFail != 0 || stats.Resources != 1 {
 		t.Fatalf("stats after manual validation: %+v", stats)
 	}
 }

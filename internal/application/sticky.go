@@ -365,9 +365,11 @@ func (s *AcquireService) deliverStickyReuseAttempt(ctx context.Context, req *Acq
 		return AcquireResult{}, domain.E("STICKY_BINDING_EXPIRED", 409, "sticky binding expired")
 	}
 
+	proofAge := time.Duration(0)
 	ev := b.Validation
+	staticProofRequired := false
 	proofFresh := !ev.CompletedAt.IsZero() && !ev.CompletedAt.After(now) &&
-		now.Sub(ev.CompletedAt) <= s.cfg.MaxProofAge()
+		(proofAge == 0 || now.Sub(ev.CompletedAt) <= proofAge)
 	if b.ResourceID != "" && !isEphemeralBinding(b) {
 		scopeHash := domain.EvidenceScopeHash(*req.Validation)
 		hits, err := s.store.RecentEvidence(ctx, scopeHash,
@@ -375,7 +377,7 @@ func (s *AcquireService) deliverStickyReuseAttempt(ctx context.Context, req *Acq
 				ResourceID: b.ResourceID, Fingerprint: b.Fingerprint,
 				SourceID: b.SourceID, SourceConfigVersion: b.SourceConfigVersion,
 				Incarnation: b.Incarnation,
-			}}, s.Now().Add(-s.cfg.MaxProofAge()))
+			}}, time.Time{})
 		if err != nil {
 			return AcquireResult{}, domain.StoreUnavailable(err)
 		}
@@ -393,6 +395,24 @@ func (s *AcquireService) deliverStickyReuseAttempt(ctx context.Context, req *Acq
 			obs.ExitIP != ev.ObservedExitIP {
 			return AcquireResult{}, domain.E("STICKY_BINDING_UNAVAILABLE", 409,
 				"sticky country observation no longer matches")
+		}
+	}
+	if strings.HasPrefix(b.Incarnation, "static_") {
+		if static, ok := s.Refiller.(StaticBindingEvidenceProvider); ok {
+			candidate, present := static.StaticBindingCandidate(b.SourceID, b.SourceConfigVersion, b.Fingerprint)
+			staticProofRequired = present
+			if proofFresh {
+				proofFresh = false
+				if present {
+					if evidence, ok := s.Refiller.(StaticEvidenceProvider); ok {
+						current, _, hit := evidence.StaticRecentEvidence(candidate, domain.EvidenceScopeHash(*req.Validation), ev.CompletedAt)
+						// A later PASS with another exit cannot authorize the old
+						// private observation/country. Revalidate the bound connection
+						// instead of presenting yesterday's exit as the current one.
+						proofFresh = hit && current.ObservedExitIP == ev.ObservedExitIP
+					}
+				}
+			}
 		}
 	}
 	if proofFresh && len(req.Filters.Countries) > 0 &&
@@ -432,19 +452,31 @@ func (s *AcquireService) deliverStickyReuseAttempt(ctx context.Context, req *Acq
 	} else {
 		ev.CacheHit = true
 	}
-	ev = deliveryEvidence(ev, s.cfg.MaxProofAge())
+	ev = deliveryEvidence(ev, proofAge)
 	connJSON, err := json.Marshal(conn)
 	if err != nil {
 		return AcquireResult{}, domain.AsError(err)
 	}
 	leaseID := domain.NewID("lease_")
+	if strings.HasPrefix(b.Incarnation, "static_") {
+		if static, ok := s.Refiller.(StaticBindingEvidenceProvider); ok {
+			release, eligible, err := static.LockStaticBindingDelivery(ctx, b.SourceID, b.SourceConfigVersion, b.Fingerprint, domain.EvidenceScopeHash(*req.Validation), ev, staticProofRequired)
+			if err != nil {
+				return AcquireResult{}, domain.E("VALIDATION_BUDGET_EXHAUSTED", 409, "static binding guard canceled")
+			}
+			defer release()
+			if !eligible {
+				return AcquireResult{}, domain.E("STICKY_BINDING_UNAVAILABLE", 409, "static binding proof was superseded before delivery")
+			}
+		}
+	}
 	finalDeadline, err := s.store.CommitStickyReuse(ctx, sqlite.StickyReuseArgs{
 		ProjectID: req.ProjectID, SessionID: req.SessionID,
 		ExpectedVersion: b.Version, KeyID: req.KeyID, ConsumerID: req.ConsumerID,
 		Fingerprint: b.Fingerprint, SourceID: b.SourceID,
 		SourceConfigVersion: b.SourceConfigVersion, ResourceID: b.ResourceID,
 		Incarnation: b.Incarnation, ScopeHash: domain.EvidenceScopeHash(*req.Validation),
-		Proof: ev, MaxProofAge: s.cfg.MaxProofAge(),
+		Proof: ev, MaxProofAge: proofAge,
 		RequestID: requestID, LeaseID: leaseID, Mode: req.Lease.Mode,
 		LeaseDeadline: leaseDeadline, ConnJSON: string(connJSON), Now: now,
 		MinUsable: s.cfg.MinUsable(), BindingCiphertext: b.ConnectionCiphertext,
@@ -553,14 +585,29 @@ func (s *AcquireService) revalidateStickyBinding(ctx context.Context,
 		}
 		return domain.Evidence{}, domain.StoreUnavailable(err)
 	}
+	if strings.HasPrefix(b.Incarnation, "static_") && (fail == nil || fail.Attributed()) && ctx.Err() == nil {
+		if static, ok := s.Refiller.(StaticBindingEvidenceProvider); ok {
+			if candidate, present := static.StaticBindingCandidate(b.SourceID, b.SourceConfigVersion, b.Fingerprint); present {
+				if evidence, ok := s.Refiller.(StaticEvidenceProvider); ok {
+					if probeHasVerdict(ctx, fail) {
+						if ingest, ok := s.Refiller.(*IngestService); ok {
+							_ = ingest.MarkStaticUnavailable(ctx, candidate, req.ProjectID)
+						}
+					} else {
+						_ = evidence.RecordStaticEvidence(ctx, candidate, domain.EvidenceScopeHash(*req.Validation), ev, buildObservation(s.geo, ev, s.Now()))
+					}
+				}
+			}
+		}
+	}
 	if fail != nil {
 		if fail.Kind == validation.FailBudget || ctx.Err() != nil {
 			return domain.Evidence{}, domain.E("VALIDATION_BUDGET_EXHAUSTED", 409,
 				"sticky proof refresh was canceled")
 		}
-		if fail.Kind == validation.FailAuth && !isEphemeralBinding(b) {
+		if !isEphemeralBinding(b) {
 			retired, err := s.store.RetireResourceOwned(ctx, b.ResourceID,
-				b.Incarnation, b.SourceID, b.SourceConfigVersion, "AUTH_FAILED", s.Now())
+				b.Incarnation, b.SourceID, b.SourceConfigVersion, "VALIDATION_FAILED", s.Now())
 			if err != nil {
 				return domain.Evidence{}, domain.StoreUnavailable(err)
 			}

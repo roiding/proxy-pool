@@ -76,12 +76,12 @@ type wireConnection struct {
 }
 
 type wireValidation struct {
-	Mode        string `json:"mode"`
-	Target      string `json:"target,omitempty"`
-	CompletedAt string `json:"completed_at"`
-	ValidUntil  string `json:"valid_until"`
-	LatencyMS   int64  `json:"latency_ms"`
-	CacheHit    bool   `json:"cache_hit"`
+	Mode        string  `json:"mode"`
+	Target      string  `json:"target,omitempty"`
+	CompletedAt string  `json:"completed_at"`
+	ValidUntil  *string `json:"valid_until"`
+	LatencyMS   int64   `json:"latency_ms"`
+	CacheHit    bool    `json:"cache_hit"`
 }
 
 type wireObservation struct {
@@ -182,15 +182,11 @@ func (s *Server) writeAcquireResponse(w http.ResponseWriter, result application.
 				ObservedAt:  wireTime(item.Observed.ObservedAt),
 			}
 		}
-		if wire.Validation.ValidUntil == "" {
-			// Delivery supplies the proof deadline; an evidence record at
-			// rest may not carry one, so the configured proof age applies.
-			if item.Validation.ValidUntil != nil {
-				wire.Validation.ValidUntil = wireTime(*item.Validation.ValidUntil)
-			} else {
-				wire.Validation.ValidUntil = wireTime(
-					item.Validation.CompletedAt.Add(s.cfg.MaxProofAge()))
-			}
+		// Null means no independent proof clock expiry. Never reconstruct the
+		// legacy 30-second deadline for a verified upload or consumed list row.
+		if item.Validation.ValidUntil != nil {
+			expiry := wireTime(*item.Validation.ValidUntil)
+			wire.Validation.ValidUntil = &expiry
 		}
 		resp.Items = append(resp.Items, wire)
 	}

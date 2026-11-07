@@ -31,7 +31,7 @@ func TestSupplyTLSUpstreamCONNECTFailureIsTargetScoped(t *testing.T) {
 	}
 }
 
-func TestSupplyBatchesSkipFailedSourceAndStopEarly(t *testing.T) {
+func TestSupplyBatchesSkipDisabledSourceAndKeepBoundedFallbacks(t *testing.T) {
 	e := newEnv(t, startJudge(t), nil)
 	good := startFakeProxy(t)
 	var calls atomic.Int32
@@ -48,8 +48,8 @@ func TestSupplyBatchesSkipFailedSourceAndStopEarly(t *testing.T) {
 			t.Fatal(derr)
 		}
 	}
-	// The first source is disabled after creation; Batches must not abort the
-	// request on it and must stop as soon as the wanted candidate is found.
+	// Downloaded candidates may fail validation. Keep bounded fallback
+	// sources instead of treating the first raw row as a successful proxy.
 	if _, derr := e.ingest.SetSourceEnabled(context.Background(), "supply-static-a", false, 1); derr != nil {
 		t.Fatal(derr)
 	}
@@ -59,7 +59,12 @@ func TestSupplyBatchesSkipFailedSourceAndStopEarly(t *testing.T) {
 	if derr != nil || len(got) != 1 {
 		t.Fatalf("failed first source aborted the bounded batch: got=%d err=%v", len(got), derr)
 	}
-	if calls.Load() != 1 {
-		t.Fatalf("batch did not stop after the first successful source: downloads=%d", calls.Load())
+	if calls.Load() != 2 {
+		t.Fatalf("enabled fallback sources were not loaded once: downloads=%d", calls.Load())
+	}
+	if _, derr := e.ingest.Batches(context.Background(),
+		[]string{"supply-static-b", "supply-static-c"}, 1,
+		application.RefillScope{Transports: []domain.Transport{domain.TransportHTTP}}); derr != nil || calls.Load() != 2 {
+		t.Fatalf("fresh fallback cache was downloaded again: downloads=%d err=%v", calls.Load(), derr)
 	}
 }

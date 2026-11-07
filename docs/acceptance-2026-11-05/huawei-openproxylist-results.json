@@ -1,0 +1,49 @@
+{
+  "checked_at": "2026-11-05T03:41:12.390350941Z",
+  "sample_seed": 20261105,
+  "sites": [
+    {
+      "site_id": "openproxylist-http",
+      "name": "OpenProxyList(HTTP)",
+      "catalog_state": "active",
+      "protocol": "http",
+      "parser_version": "lines_v1",
+      "fetch_ok": true,
+      "entries": 8540,
+      "fetched": 8540,
+      "rejected": 0,
+      "pages_done": 1,
+      "pages_total": 1,
+      "complete": true,
+      "sampled": false,
+      "probe": {
+        "requested": true,
+        "mode": "tls",
+        "target": "example.com:443",
+        "sample": 5,
+        "attempted": 5,
+        "pass": 0,
+        "fail": 5,
+        "fail_kinds": {
+          "PROXY": 4,
+          "TARGET": 1
+        },
+        "fail_reasons": {
+          "target_tls_handshake": 1,
+          "timeout": 4
+        },
+        "all_sample_passed": false
+      },
+      "verdict": "no_proxy_pass",
+      "millis": 17896
+    }
+  ],
+  "notes": [
+    "fetch_only verifies fetching/parsing only, never proxy liveness",
+    "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+    "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+    "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+    "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+  ],
+  "all_requested_checks_passed": false
+}

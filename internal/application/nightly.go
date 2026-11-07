@@ -31,9 +31,9 @@ type ValidationStatus struct {
 
 // NightlyValidator validates self-uploaded (custom) sources: one full pass per
 // night at the configured time, plus operator-triggered passes for one source.
-// It refreshes health evidence, deletes only definitively dead credentials,
-// and never authorizes a delivery: every acquire still performs its own fresh
-// validation. Uncertain failures only grow the retest backoff.
+// Successful exact-scope proof is retained for later requests. Completed
+// failed validations remove uploaded supply; cancellation is not a verdict.
+// The validator never delivers connections or writes client cooldown.
 type NightlyValidator struct {
 	store      *sqlite.Store
 	cfg        config.Config
@@ -243,6 +243,7 @@ func (n *NightlyValidator) runPass(ctx context.Context, sourceID string) (int, i
 			}()
 		}
 		wg.Wait()
+		retired = int(n.Status().Retired)
 		for _, cand := range candidates {
 			processed[cand.Resource.ID] = true
 		}
@@ -269,13 +270,17 @@ func (n *NightlyValidator) probeOne(ctx context.Context, runID string, cand doma
 	defer func() { <-n.probeSlots }()
 	contextKey := domain.ContextKey(cand.Resource.CredentialVersion, cand.Resource.Session)
 	probeCtx, cancel := context.WithTimeout(ctx, n.cfg.ProbeTotalTimeout())
-	ev, fail := validation.ProbeHTTPSBasic(probeCtx, cand.Resource.Conn, n.judgeURL, validation.Limits{
-		DialTimeout:  n.cfg.ConnectTimeout(),
-		ProbeTotal:   n.cfg.ProbeTotalTimeout(),
-		AllowPrivate: n.cfg.AllowPrivateAddresses,
-		RootCAs:      n.rootCAs,
-		JudgeSecret:  n.cfg.JudgeSecret,
-	}, runID)
+	opts := validation.ProbeOptions{JudgeURL: n.judgeURL, Limits: validation.ProbeLimits{
+		DialTimeout:   n.cfg.ConnectTimeout(),
+		ProbeTotal:    n.cfg.ProbeTotalTimeout(),
+		AllowPrivate:  n.cfg.AllowPrivateAddresses,
+		RootCAs:       n.rootCAs,
+		JudgeSecret:   n.cfg.JudgeSecret,
+		CAFingerprint: judgeCAPingerprint(n.cfg.JudgeCAPem),
+	}}
+	scope := domain.ValidationScope{Mode: "basic", Profile: validation.ProfileHTTPSBasicV1,
+		SecurityHash: validation.ProbeSecurityHash(opts)}
+	ev, fail := validation.Probe(probeCtx, scope, cand.Resource.Conn, opts, runID)
 	cancel()
 	outcome := "PASS"
 	detail := ""
@@ -297,21 +302,21 @@ func (n *NightlyValidator) probeOne(ctx context.Context, runID string, cand doma
 		cand.SourceConfigVersion); err != nil {
 		return err
 	}
-	// Wrong/expired credentials are final evidence: the resource is deleted
-	// immediately, its sticky snapshots are dropped, and cached evidence is
-	// invalidated. Timeouts and refusals only feed the backoff below.
-	if fail != nil && fail.Kind == validation.FailAuth {
+	if fail == nil {
 		fingerprint := domain.ConnectionFingerprint(n.cfg.IdentitySecret,
 			cand.Resource.Conn.Transport, cand.Resource.Conn.Host, cand.Resource.Conn.Port,
 			cand.Resource.Conn.Username, cand.Resource.Conn.Password)
-		retired, err := n.store.RetireResourceOwned(ctx, cand.Resource.ID,
-			cand.Incarnation, cand.Offer.SourceID, cand.SourceConfigVersion,
-			"AUTH_FAILED", n.Now())
-		if err == nil && retired > 0 {
-			_, _ = n.store.ExpireBindingsForFingerprints(ctx, []string{fingerprint}, n.Now())
-			_ = n.store.InvalidateEvidence(ctx, []string{fingerprint})
-			n.addProgress(0, 1)
+		if err := n.store.PutEvidenceProduction(ctx, sqlite.EvidenceKey{ResourceID: cand.Resource.ID,
+			Fingerprint: fingerprint, SourceID: cand.Offer.SourceID,
+			SourceConfigVersion: cand.SourceConfigVersion, Incarnation: cand.Incarnation},
+			domain.EvidenceScopeHash(scope), ev); err != nil {
+			return err
 		}
+	} else if probeHasVerdict(ctx, fail) {
+		if err := retireFailedCandidate(ctx, n.store, nil, cand, n.cfg.IdentitySecret, n.Now(), DefaultAcquireProject); err != nil {
+			return err
+		}
+		n.addProgress(0, 1)
 	}
 	if fail == nil || fail.Attributed() {
 		return n.health.RecordScoped(ctx, cand.Resource.ID, contextKey,

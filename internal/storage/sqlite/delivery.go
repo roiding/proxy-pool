@@ -50,6 +50,8 @@ type DeliveryCandidate struct {
 	MinUsable time.Duration
 	// DeliverySafety bounds provider expiry in the final transaction.
 	DeliverySafety time.Duration
+	// CacheDeadline is list selection freshness, not a physical proxy expiry.
+	CacheDeadline *time.Time
 }
 
 type stickyReuseGuard struct {
@@ -238,6 +240,11 @@ func (s *Store) CommitFinalDelivery(ctx context.Context, a CommitArgs,
 			if err := openDeliveryCDTx(t, ctx, a); err != nil {
 				return err
 			}
+			if c.Ephemeral {
+				if err := markSourceProxyTx(ctx, t, c.SourceID, c.ResourceID, a.ProjectID, "delivered", a.Now); err != nil {
+					return err
+				}
+			}
 			// Capacity is checked after each lease insert. The pre-check above
 			// is the normal partial-result filter; reaching this branch means
 			// the selected plan itself overfilled, so no response may be sent.
@@ -321,6 +328,16 @@ func insertDeliveryLeaseTx(t *sql.Tx, ctx context.Context, a CommitArgs, c *Deli
 
 func validateFinalCandidateTx(t *sql.Tx, ctx context.Context, a CommitArgs,
 	c DeliveryCandidate) (DeliveryCandidate, error) {
+	if c.Ephemeral {
+		if blocked, err := sourceProxyBlockedTx(ctx, t, c.SourceID, c.ResourceID, a.Now); err != nil {
+			return c, err
+		} else if blocked {
+			return c, ErrNotEligible
+		}
+	}
+	if c.CacheDeadline != nil && !c.CacheDeadline.After(a.Now) {
+		return c, ErrStale
+	}
 	if c.Fingerprint == "" || c.SourceID == "" || c.LeaseID == "" || c.DeadlineText == "" {
 		return c, fmt.Errorf("incomplete final delivery candidate: %w", ErrNotEligible)
 	}

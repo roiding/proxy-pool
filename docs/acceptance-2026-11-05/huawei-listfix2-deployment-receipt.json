@@ -1,0 +1,199 @@
+{
+  "checked_at": "2026-11-05T08:20:17.098967+00:00",
+  "release": "listfix2-20261105-e4dd765f6785",
+  "version": "listfix2-20261105-e4dd765f6785 (e4dd765f6785)",
+  "source_content_sha256": "e4dd765f6785eeb65bdaaedb0a2c2341eadc3f45ac8c8efdb30f9ca7a653fe98",
+  "base_commit": "b248bb38367a68bea1552eef195860864191d74d",
+  "image_id": "sha256:4674720ad02e0bade4f408c882092826117a5975e45baf22478f9a2ea207ae47",
+  "backup_path": "/opt/proxy-pool/backups/listfix2-20261105-e4dd765f6785",
+  "private_health": "ok",
+  "admin_auth": "401_without_auth",
+  "channels": [
+    {
+      "id": "ip3366",
+      "name": "云代理",
+      "variants": 2
+    },
+    {
+      "id": "jiliuip",
+      "name": "积流代理",
+      "variants": 1
+    },
+    {
+      "id": "qiyunip",
+      "name": "齐云代理",
+      "variants": 1
+    },
+    {
+      "id": "ip89",
+      "name": "89免费代理",
+      "variants": 2
+    },
+    {
+      "id": "lumiproxy",
+      "name": "LumiProxy",
+      "variants": 3
+    },
+    {
+      "id": "proxyscrape",
+      "name": "ProxyScrape",
+      "variants": 4
+    },
+    {
+      "id": "openproxylist",
+      "name": "OpenProxyList",
+      "variants": 4
+    },
+    {
+      "id": "geonode",
+      "name": "Geonode",
+      "variants": 2
+    },
+    {
+      "id": "monosans",
+      "name": "monosans",
+      "variants": 2
+    },
+    {
+      "id": "spys",
+      "name": "Spys",
+      "variants": 1
+    },
+    {
+      "id": "freeproxy",
+      "name": "Free-Proxy-List",
+      "variants": 4
+    },
+    {
+      "id": "ihuan",
+      "name": "小幻免费代理",
+      "variants": 1
+    },
+    {
+      "id": "scdn",
+      "name": "SCDN",
+      "variants": 2
+    },
+    {
+      "id": "webshare",
+      "name": "Webshare",
+      "variants": 2
+    }
+  ],
+  "channel_brands": 14,
+  "preserved_table_counts": {
+    "sources": 3,
+    "proxy_resources": 0,
+    "leases": 0,
+    "projects": 1,
+    "api_keys": 0
+  },
+  "config_sha256_unchanged": true,
+  "geoip_sha256_unchanged": true,
+  "database_quick_check": "ok",
+  "foreign_key_check": "ok",
+  "loopback_port_preserved": true,
+  "cloudflare_allowlist_preserved": true,
+  "public_https": true,
+  "judge_signed": true,
+  "automatic_new_source_creation": false,
+  "public_health": "HTTP 200",
+  "public_admin_page": "HTTP 200; brand-catalog UI present",
+  "public_admin_auth": "401_without_auth",
+  "public_authenticated_version": "matched",
+  "public_judge": "nonce and HMAC verified over normal TLS",
+  "public_judge_exit_ip": "global; matches server",
+  "health_status": "healthy",
+  "restart_count": 0,
+  "final_checked_at": "2026-11-05T08:34:11.563997+00:00",
+  "validation_smoke": {
+    "checked_at": "2026-11-05T08:23:04.390751+00:00",
+    "release": "listfix2-20261105-e4dd765f6785",
+    "source_id": "proxyscrape-elite",
+    "validation": "basic signed judge",
+    "per_probe_timeout_ms": 2500,
+    "prewarm": {
+      "job_id": "warm_597bea50d73401c13f916bd8",
+      "state": "COMPLETED",
+      "target": 1,
+      "ready": 1,
+      "probed": 3,
+      "failed": 2,
+      "stop_reason": "target_met",
+      "last_error": "",
+      "started_at": "2026-11-05T08:23:04.401140973Z",
+      "finished_at": "2026-11-05T08:23:07.34010404Z",
+      "passed_attempts": 1
+    },
+    "acquire": {
+      "requested": 1,
+      "delivered": 1,
+      "missing": 0,
+      "partial": false,
+      "reason": null,
+      "request_id": "req_9703398224e141d40d8b8c1f",
+      "evidence": [
+        {
+          "source_id": "proxyscrape-elite",
+          "validation": {
+            "mode": "basic",
+            "completed_at": "2026-11-05T08:23:07.247638205Z",
+            "valid_until": "2026-11-05T08:23:37.247638205Z",
+            "latency_ms": 1546,
+            "cache_hit": true
+          },
+          "lease_expires_at": "2026-11-05T08:23:38.419002266Z"
+        }
+      ],
+      "leases_released": [
+        true
+      ]
+    },
+    "sources": [
+      {
+        "source_id": "proxyscrape-elite",
+        "attempt_pass": 14,
+        "attempt_fail": 55,
+        "circuit_state": "CLOSED",
+        "source_cooldown_until": null,
+        "last_validated_at": "2026-11-05T08:23:07.247638205Z"
+      },
+      {
+        "source_id": "scdn-http",
+        "attempt_pass": 0,
+        "attempt_fail": 0,
+        "circuit_state": "CLOSED",
+        "source_cooldown_until": null,
+        "last_validated_at": null
+      },
+      {
+        "source_id": "spys-http",
+        "attempt_pass": 0,
+        "attempt_fail": 6,
+        "circuit_state": "CLOSED",
+        "source_cooldown_until": null,
+        "last_validated_at": "2026-11-05T05:11:12.437626521Z"
+      }
+    ],
+    "probe_log_outcomes": {
+      "FAIL": 2,
+      "PASS": 1
+    },
+    "probe_fail_reasons": {
+      "judge_error": 2
+    },
+    "completed_at": "2026-11-05T08:23:08.453345+00:00"
+  },
+  "linux_tests": "go test -p 1 -count=1 ./... PASS",
+  "linux_vet": "go vet -p 1 ./... PASS",
+  "local_race": "application and integration race PASS; storage/API/validation race passed in the preceding circuit fix",
+  "build_toolchain": "go1.25.14 linux/amd64",
+  "native_binary_sha256": {
+    "proxy-pool": "967001aa13ccd14be700e0bbea1ee3cb158f42d11df8ab04d018f50a0f803343",
+    "sitecheck": "6cf1287c35d01a875f26d32158374a0f07078c299bb89e4da0d5311bc15adfc7"
+  },
+  "sources_after_test": 3,
+  "resources_after_test": 0,
+  "active_leases_after_test": 0,
+  "new_source_circuits": 0
+}

@@ -1,0 +1,170 @@
+{
+  "checked_at": "2026-11-05T03:38:57.974524+00:00",
+  "release": "channels-20261105-41dad296e55c",
+  "version": "channels-20261105-41dad296e55c (41dad296e55c)",
+  "source_content_sha256": "41dad296e55ce758144277cd2630515e74f68b1a237a2ddb005f7d076949e23a",
+  "base_commit": "b248bb38367a68bea1552eef195860864191d74d",
+  "image_id": "sha256:f78101ed05a8e0994a113378cbdbf4e2d8d1ece8c1364b9d2f8268cfff060d6f",
+  "backup_path": "/opt/proxy-pool/backups/channels-20261105-41dad296e55c",
+  "private_health": "ok",
+  "admin_auth": "401_without_auth",
+  "channels": [
+    {
+      "id": "ip3366",
+      "name": "\u4e91\u4ee3\u7406",
+      "variants": 2
+    },
+    {
+      "id": "jiliuip",
+      "name": "\u79ef\u6d41\u4ee3\u7406",
+      "variants": 1
+    },
+    {
+      "id": "qiyunip",
+      "name": "\u9f50\u4e91\u4ee3\u7406",
+      "variants": 1
+    },
+    {
+      "id": "ip89",
+      "name": "89\u514d\u8d39\u4ee3\u7406",
+      "variants": 2
+    },
+    {
+      "id": "lumiproxy",
+      "name": "LumiProxy",
+      "variants": 3
+    },
+    {
+      "id": "proxyscrape",
+      "name": "ProxyScrape",
+      "variants": 4
+    },
+    {
+      "id": "openproxylist",
+      "name": "OpenProxyList",
+      "variants": 4
+    },
+    {
+      "id": "geonode",
+      "name": "Geonode",
+      "variants": 2
+    },
+    {
+      "id": "monosans",
+      "name": "monosans",
+      "variants": 2
+    },
+    {
+      "id": "spys",
+      "name": "Spys",
+      "variants": 1
+    },
+    {
+      "id": "freeproxy",
+      "name": "Free-Proxy-List",
+      "variants": 4
+    },
+    {
+      "id": "ihuan",
+      "name": "\u5c0f\u5e7b\u514d\u8d39\u4ee3\u7406",
+      "variants": 1
+    },
+    {
+      "id": "scdn",
+      "name": "SCDN",
+      "variants": 2
+    },
+    {
+      "id": "webshare",
+      "name": "Webshare",
+      "variants": 2
+    }
+  ],
+  "channel_brands": 14,
+  "preserved_table_counts": {
+    "sources": 0,
+    "proxy_resources": 0,
+    "leases": 0,
+    "projects": 1,
+    "api_keys": 0
+  },
+  "config_sha256_unchanged": true,
+  "geoip_sha256_unchanged": true,
+  "database_quick_check": "ok",
+  "foreign_key_check": "ok",
+  "loopback_port_preserved": true,
+  "cloudflare_allowlist_preserved": true,
+  "public_https": true,
+  "judge_signed": true,
+  "automatic_new_source_creation": false,
+  "public_health": "HTTP 200",
+  "public_admin_page": "HTTP 200; brand-catalog UI present",
+  "public_admin_auth": "401_without_auth",
+  "public_authenticated_version": "matched",
+  "public_judge": "nonce and HMAC verified over normal TLS",
+  "public_judge_exit_ip": "global; matches server",
+  "health_status": "healthy",
+  "restart_count": 0,
+  "application_error_log_count": 0,
+  "linux_tests": "go test -p 1 -count=1 ./... PASS",
+  "linux_vet": "go vet -p 1 ./... PASS",
+  "toolchain": "go1.25.14 linux/amd64",
+  "cgo_enabled": true,
+  "cgo_cflags": "-O1 -g0 --param ggc-min-expand=5 --param ggc-min-heapsize=16384",
+  "build_memory_limit": "256MiB; builder only; not a runtime RSS guarantee",
+  "migration_rehearsal": "consistent online DB copy; isolated container without network or public ports; healthy",
+  "native_binary_sha256": {
+    "proxy-pool": "18fe4c7707c4c57cbdffa22f025e12e352d45b2dd2e028057a73f1a1c62779f9",
+    "sitecheck": "320d4f93dfbc458bbef2dda3f7cc43d05f6613db542322fe1548356a7223a27a"
+  },
+  "cloud_acceptance": {
+    "checked_at": "2026-11-05T03:41:12.390350941Z",
+    "sample_seed": 20261105,
+    "sites": [
+      {
+        "site_id": "openproxylist-http",
+        "name": "OpenProxyList(HTTP)",
+        "catalog_state": "active",
+        "protocol": "http",
+        "parser_version": "lines_v1",
+        "fetch_ok": true,
+        "entries": 8540,
+        "fetched": 8540,
+        "rejected": 0,
+        "pages_done": 1,
+        "pages_total": 1,
+        "complete": true,
+        "sampled": false,
+        "probe": {
+          "requested": true,
+          "mode": "tls",
+          "target": "example.com:443",
+          "sample": 5,
+          "attempted": 5,
+          "pass": 0,
+          "fail": 5,
+          "fail_kinds": {
+            "PROXY": 4,
+            "TARGET": 1
+          },
+          "fail_reasons": {
+            "target_tls_handshake": 1,
+            "timeout": 4
+          },
+          "all_sample_passed": false
+        },
+        "verdict": "no_proxy_pass",
+        "millis": 17896
+      }
+    ],
+    "notes": [
+      "fetch_only verifies fetching/parsing only, never proxy liveness",
+      "sample_has_pass means at least one unique sampled proxy passed; counts describe the bounded sample, not the whole channel",
+      "direct controlled source downloads: no implicit system/environment proxy; TLS certificates stay verified",
+      "no candidates, credentials, raw vendor response bodies, or business HTTP payloads are included in this report",
+      "SCDN not called: every extraction requires an explicit separate -scdn invocation"
+    ],
+    "all_requested_checks_passed": false
+  },
+  "completed_at": "2026-11-05T03:42:53.313194+00:00"
+}

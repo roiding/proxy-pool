@@ -9,6 +9,45 @@ are in [the repositioning plan, updated 2026-11-02](docs/project-repositioning-p
 Older architecture documents and old API examples are historical references
 where they conflict with that plan.
 
+## Proxy lifetime rules (updated 2026-11-05)
+
+| Supply | Completed validation failure | Successful delivery | Retention |
+| --- | --- | --- | --- |
+| Network channels (`provider_api`, `site_fetch`, `static_url`, `account_list`) | Temporarily blacklist it in the same source | Temporarily blacklist it in the same source | 30 minutes per fetched batch |
+| Uploaded `custom` supply | Remove the candidate | Keep it | Persistent; no automatic cache expiry |
+
+An exact-scope PASS has no separate 30-second expiry for list/upload supply.
+Network delivery/failure clears its reusable PASS, not the downloaded row. A
+persistent source-scoped blacklist skips the connection during prewarm and final
+delivery, including after a restart or another download. The default window is
+30 minutes; admins can change `network_reuse_cooldown_ms` in downstream project
+configuration (UI: seconds). Zero uses the default, and lowering the setting
+does not shorten an existing window. This is separate from project CD.
+After the window expires, a candidate must pass validation again before reuse.
+An unexpired list snapshot is reused even when every row is blacklisted; manual
+refresh does not refetch it. Concurrent fetches collapse into one operation,
+and persistent fetch cadence/backoff protects absent or failed snapshots.
+Prewarm shares a bounded concurrent pool, takes turns across authorized sources,
+and stops at the unique total target. Cancellation is not a proxy failure.
+Existing leases, project CD, access checks and source/version guards remain in place.
+All enabled, project-authorized network adapters share this lifecycle, including
+SCDN. Set `auto_prewarm_target` in a downstream project (0 disables it) to keep
+that many validated, unused candidates ready. The bounded scheduler replenishes
+gaps through the same concurrent prewarm service and persists its backoff.
+Before creating a job, it checks for candidates that can still be validated or
+an uncached source whose fetch window is open. Exhausted caches and upload
+inventory wait without creating empty jobs. New uploads, newly eligible sources,
+cache expiry and cooldown expiry are re-evaluated on later checks; a shortfall
+alone does not trigger another job or bypass a source's fetch backoff.
+A sticky session is a private assigned snapshot, not reusable network pool stock.
+
+Legacy list/proof TTL configuration fields are kept for loading old configurations;
+they no longer control list/upload PASS reuse. `validation.valid_until` is null for
+uploads and the batch deadline for ordinary list deliveries, never a fabricated
+physical expiry. See [the lifecycle change record](docs/proxy-lifecycle-2026-11-05.md).
+The current Huawei deployment and bounded real-network checks are recorded in
+[the unified-channel release record](docs/unified-channels-and-console-2026-11-05.md).
+
 ## Current Contract
 
 - Downstream projects authenticate with a project API key. A project may hold
@@ -16,17 +55,18 @@ where they conflict with that plan.
 - Project CD is keyed by the stable project and the actual connection
   fingerprint. The stored expiration is fixed at delivery. A later `cd`
   reduction, `cd: 0`, a new key, or a different source cannot shorten it.
-- On-demand provider candidates are request-local and never enter public
-  inventory. Static-list results use a separate bounded TTL cache and may
-  supply public acquisition, but they are not written to persistent
-  inventory. Only uploaded custom inventory is persistent candidate stock.
+- All network adapters use the same bounded 30-minute memory cache and may
+  supply acquisition and automatic prewarm. They do not write persistent
+  proxy inventory. Assigned-account lists use the same disposable cache with an
+  explicit source-side private project scope. Only uploaded custom inventory
+  is persistent candidate stock.
 - Recent passing evidence may be reused only for the same validation scope
   and current source configuration. Target TLS evidence for one target cannot
   authorize another target; basic validation cannot impersonate TLS.
-- A proxy whose authentication is explicitly rejected is removed. Uncertain
-  timeouts, target failures, rate limits, and infrastructure failures are
-  classified separately and are not converted into a tombstone or permanent
-  blacklist.
+- A completed failed validation temporarily blacklists a network connection
+  in its source; only failed uploaded supply is deleted. Request cancellation
+  and total request budget exhaustion do not mark a proxy dead. The persistent
+  blacklist survives downloads and restarts until its configured deadline.
 - A successful acquire returns HTTP 200 with the delivered items and a
   shortfall reason even when delivery is partial or empty. Invalid request
   fields return 400; authentication failures return 401; authorization
@@ -168,17 +208,21 @@ token can also authenticate directly. Cookie mutations require the
 never falls back to an admin cookie.
 
 The console separates channels, inventory/static cache, jobs, projects,
-sessions, usage, and system status. The source create form emits the typed
-nested config the API requires:
+sessions, usage, and system status. Channel creation/editing uses labeled form
+controls for protocol, batch size, country, URL and page count. Advanced settings
+are collapsed; JSON is read-only diagnostics, not a required editing surface.
+The form emits the typed nested config the API requires:
 
 - provider: `{"provider":{"protocol":"http","fetch_count":20}}`
 - catalogue site: `{"site":{"site_id":"ip89","max_pages":1}}`
 - generic static URL: `{"static":{"url":"https://example.com/list.txt","default_transport":"http"}}`
+- assigned account: `{"account":{"vendor_id":"webshare","protocol":"http","mode":"direct"},"access":{"project_ids":["project-id"]}}`
 - upload channel: `{}` plus upload through its import endpoint
 
 Flat legacy provider/site fields are deliberately rejected. Source updates
 use optimistic `config_version`; the explicit delete endpoint directly removes
-the source and its inventory. Saving a source never starts a fetch or probe.
+the source and its inventory. Saving updates the definition; enabled sources
+participate in the next authorized automatic-maintenance run.
 
 Project source scope is tri-state. `null` restores unrestricted access, `[]`
 is an empty allowlist, and a non-empty array is an explicit allowlist. Project
@@ -192,6 +236,10 @@ Main admin routes include:
 - `GET/PUT /api/v1/admin/projects/{id}/sources`
 - `GET/POST /api/v1/admin/sources`, `GET/PATCH/DELETE /api/v1/admin/sources/{id}`
 - `POST /api/v1/admin/sources/{id}/imports`, `/fetch`, `/validate`
+- `POST /api/v1/admin/sources/{id}/refresh` (asynchronous list download only)
+- `GET /api/v1/admin/sources/{id}/cache`, `/fetch-state`
+- `GET/PUT/DELETE /api/v1/admin/sources/{id}/secret` (account-key status/write/clear)
+- `GET /api/v1/admin/channel-templates` (curated supplier families; protocol/filter variants within each supplier)
 - `GET /api/v1/admin/adapters`, `/sites`, `/jobs`, `/sessions`, `/stats`,
   `/validation`, `/daily`, `/system`
 - `GET/PUT /api/v1/admin/settings`; `POST /api/v1/admin/settings/bark/test`
@@ -220,16 +268,100 @@ The code-owned adapter registry contains:
   `application/json` batches; both are additive and duplicates do not reset
   health or CD. Periodic validation and manual validation are separate
   operations.
-- `provider_api`: the SCDN on-demand API. Candidates are fetched during a
-  request and never placed in public inventory.
+- `provider_api`: the SCDN public API. Its returned proxies use the same
+  cache, blacklist and prewarm path as the other network adapters. The vendor
+  documents a maximum of 20 proxies per API call.
 - `site_fetch`: one catalogued public-list site with a code-owned parser.
 - `static_url`: a generic bounded HTTP(S) static list.
+- `account_list`: Webshare direct mode, reading only already-assigned proxies.
+  It does not buy, replace or allocate proxies. Complete pagination is required
+  before a new account snapshot replaces the old one.
 
-Fetches are bounded and single-flight per source. Static cache TTL and memory
-limits come from `static_cache_ttl_ms`, `static_cache_max_entries`, and
-`static_cache_max_bytes`; they are wired into the running ingest service at
-startup. API and static channel configuration is nested and typed; no old flat
+Fetches are bounded and single-flight per source. Network cache lifetime is
+30 minutes; memory limits come from `static_cache_max_entries` and
+`static_cache_max_bytes`. The old `static_cache_ttl_ms` field is read for
+configuration compatibility but does not override this lifecycle. API and static channel configuration is nested and typed; no old flat
 adapter payload is accepted.
+
+### List refresh, privacy and prewarm
+
+The console's template create action sends `enabled: false`. Inspect the
+protocol, account and project scope before explicitly enabling a new instance.
+An `active` catalog template means its adapter is implemented, **not** that the
+current upstream or any proxy has passed live acceptance. Unknown contracts,
+unknown SOCKS versions and TLS-intercepting gateways are not enabled by guessing
+a parser or disabling certificate verification.
+
+List sources optionally accept:
+
+```json
+{
+  "site": {"site_id": "openproxylist-http", "max_pages": 1},
+  "refresh": {
+    "mode": "interval",
+    "interval_ms": 300000,
+    "cache_ttl_ms": 600000,
+    "max_candidates": 1000
+  },
+  "access": {"project_ids": null}
+}
+```
+
+- Omitted refresh configuration retains demand refresh and the deployment TTL.
+  `mode: "demand"` has no `interval_ms`; interval mode requires an explicit TTL
+  at least as long as the interval. Supplied intervals/TTLs are 1 second–24 hours.
+- Source `access.project_ids` is a second ceiling in addition to the project's
+  allowlist: omitted/null is public, `[]` denies every project, and an explicit
+  list permits only those projects. Private source filtering precedes bounded
+  selection/refill/Ready pages and is checked again at final delivery.
+- Account sources require an explicit non-null private scope. Create them
+  disabled, configure the API key separately, then enable. The deployment
+  `secret_encryption_key` must have at least 32 bytes. Keys are AES-GCM sealed
+  with source/version binding; GET returns status only. PUT/DELETE take a
+  `config_version` CAS, invalidate the old cache/proofs, and preserve project CD.
+- A refresh job's `ready` field means retained **unvalidated cached records**,
+  not live proxies. Refresh jobs are admin-only, including when their project
+  ID is `default`. They share durable job limits with prewarm and are interrupted
+  after restart rather than silently resumed.
+- Prewarm accepts every enabled, project-authorized network adapter and uploaded
+  inventory. Slow downloads do not block validation of already loaded channels.
+  It probes a bounded project-scoped batch and caches same-scope proof;
+  it creates neither a lease nor project CD. A newer FAIL overrides PASS.
+  Missing, expired, removed or replaced evidence cannot authorize a delivery.
+- Cache limits include at most 1,000 retained candidates per source, 4,096
+  globally and 1,024 proof entries per source, in addition to entry/estimated-byte
+  limits. Deduplication precedes bounded prefix/reservoir sampling. The byte
+  accounting is conservative cache accounting, **not** an RSS guarantee.
+- Failed refreshes do not extend the old hard TTL. HTTP 304 retains the batch
+  and existing proof ages; a memory replay is reported separately as `cache_hit`.
+  Persistent fetch cadence/backoff and account-credential shared rate limits
+  survive restart. `Retry-After` is respected.
+
+### One-channel acceptance
+
+OpenProxyList is included under the existing `openproxylist-http` and
+`openproxylist-https` IDs, using the respective `http.txt`/`https.txt` endpoints
+at [api.openproxylist.xyz](https://api.openproxylist.xyz/). The HTTPS list denotes
+the supplier's HTTP CONNECT claim, not TLS-to-proxy support or a pool PASS.
+
+The CLI performs no networking without an explicit selection:
+
+```sh
+go run ./cmd/sitecheck -list
+go run ./cmd/sitecheck -site openproxylist-http -max-pages 1 -timeout 30 -json
+# Explicit, bounded proxy validation; use your own reachable signed Judge.
+go run ./cmd/sitecheck -site openproxylist-http -probe 3 \
+  -judge https://judge.example.com/v1/judge -timeout 30 -seed 1 -json
+```
+
+Default selected-site behavior is fetch/parse only (`fetch_only`). A successful
+sample is reported as `sample_has_pass` or `sample_all_pass`, never an all-site
+availability guarantee. `-all` is opt-in; SCDN requires a separate `-scdn` call
+that may consume vendor quota. A paused endpoint may be diagnostically rechecked
+only if its protocol and parser are already known. Reports omit raw candidate
+connections, credentials and vendor response bodies. Follow the
+[per-channel runbook](docs/channel-acceptance-runbook-2026-11-04.md) for the
+console/API path, evidence capture and rejection conditions.
 
 ## Validation, Health, and Jobs
 
@@ -390,12 +522,50 @@ per-channel reports still need explicit verification on the target host.
 
 ## Acceptance Status
 
-Local final-source acceptance passes all 97 root audits under both the full
-normal and race suites, and `go vet ./...` passes. Release acceptance is still
-incomplete. Remaining external gates include the official Huawei usage reader
+The earlier frozen source acceptance recorded 97 root audits under both the
+normal and race suites (see `docs/acceptance-2026-11-03`); that historical
+report is not a live-availability claim for newly added channels. The channel
+development and current local verification are recorded separately in
+[the adapter/storage plan](docs/channel-adapters-and-storage-plan-2026-11-04.md)
+and [the per-channel acceptance runbook](docs/channel-acceptance-runbook-2026-11-04.md).
+Release acceptance is still incomplete. Remaining external gates include the official Huawei usage reader
 verification, per-channel live acquisition/probe reports, target host
 architecture/resource verification, public Judge reachability, and TLS/admin
 security checks. The user has separately authorized a deployment to Huawei
 Flexus L, but the target SSH host, OS/libc/CPU details, and existing service
 topology are not yet known. This repository has not performed that deployment,
 and no CI workflow holds production SSH credentials or mutates a target host.
+
+### Curated channel directory (2026-11-05)
+
+The operator directory now admits **14 supplier families** (12 public-list
+families, SCDN, Webshare), not one channel for every protocol, anonymity filter,
+subsite or same-name repository path. HTTP/SOCKS5 and filter choices live in a
+channel's `variants`; they do not multiply the channel count. Each variant has
+its own complete configuration. Selecting/saving a template does not fetch.
+Existing source IDs, account scopes, cache versions, leases and project CD are
+preserved; grouped instance rows are presentation only.
+
+New built-in sources must pass the engineering admission list. TheSpeedX,
+Kuaidaili, stale/ambiguous endpoints, unverified commercial APIs and
+TLS-intercepting gateways are not offered as new channels. Legacy parser IDs
+remain for diagnostics/unchanged existing definitions, not as a bypass for new
+creation. `sitecheck -list` shows supplier families; explicit `-all` selects one
+primary variant per admitted public supplier. `-site ID` remains an endpoint
+level diagnostic. Low-level `/admin/sites` is retained for compatibility, not
+the curated creation directory.
+
+Engineering admission is **not live-network acceptance** and does not promise
+independent supply or daily free credits. See the
+[channel value review](docs/channel-value-review-2026-11-05.md) and
+[acceptance runbook](docs/channel-acceptance-runbook-2026-11-04.md).
+
+Local integration validation for this batch is recorded separately in the
+[2026-11-05 verification log](docs/channel-local-verification-2026-11-05.md);
+it is not public supplier availability or a daily-free-quota claim.
+
+The first **live-network** small-sample run (2026-11-05) is recorded in the
+[one-row-per-supplier acceptance summary](docs/acceptance-2026-11-05/channel-summary.md).
+No supplier was established as a stable recommendation. Spys produced verified
+TLS passes but results varied by sample/time; others had no sample pass, blocked
+fetches or missing account credentials. This is distinct from local fixtures.

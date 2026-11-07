@@ -1,0 +1,62 @@
+{
+  "release": "blacklist-20261105-1607db3b582d",
+  "checked_at": "2026-11-05T13:54:01.487206+00:00",
+  "scope": "basic signed public Judge; normal TLS",
+  "sources": [
+    "freeproxy-http",
+    "proxyscrape-elite",
+    "spys-http"
+  ],
+  "first_prewarm": {
+    "job_id": "warm_399651668f76e128277f3d39",
+    "state": "PARTIAL",
+    "target": 3,
+    "ready": 2,
+    "probed": 48,
+    "failed": 46,
+    "stop_reason": "deadline",
+    "started_at": "2026-11-05T13:53:16.251581261Z",
+    "finished_at": "2026-11-05T13:54:01.382734895Z"
+  },
+  "after_36_seconds": {
+    "job_id": "warm_db77ac08058a43164858064b",
+    "state": "COMPLETED",
+    "target": 2,
+    "ready": 2,
+    "probed": 0,
+    "failed": 0,
+    "stop_reason": "target_met",
+    "started_at": "2026-11-05T13:54:37.493617824Z",
+    "finished_at": "2026-11-05T13:54:37.76061871Z"
+  },
+  "proof_no_30_second_expiry": true,
+  "acquire": {
+    "delivered": 1,
+    "missing": 0,
+    "cache_hit": [
+      true
+    ]
+  },
+  "delivery_entered_blacklist": true,
+  "source_cache": [
+    {
+      "source_id": "freeproxy-http",
+      "candidates": 300,
+      "verified": 0,
+      "blacklisted": 21
+    },
+    {
+      "source_id": "proxyscrape-elite",
+      "candidates": 330,
+      "verified": 1,
+      "blacklisted": 26
+    },
+    {
+      "source_id": "spys-http",
+      "candidates": 400,
+      "verified": 0,
+      "blacklisted": 23
+    }
+  ],
+  "completed_at": "2026-11-05T13:54:37.824806+00:00"
+}

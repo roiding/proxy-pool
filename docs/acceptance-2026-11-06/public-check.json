@@ -1,0 +1,17 @@
+{
+  "admin_http": 200,
+  "health_http": 200,
+  "anonymous_admin_http": 401,
+  "public_admin_matches_released_page": true,
+  "file_input_present": true,
+  "upload_section_present": true,
+  "health": {
+    "status": "ok"
+  },
+  "anonymous_admin": {
+    "error": {
+      "code": "UNAUTHENTICATED",
+      "message": "missing or invalid bearer token"
+    }
+  }
+}

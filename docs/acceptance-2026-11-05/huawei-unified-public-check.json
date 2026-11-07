@@ -1,0 +1,9 @@
+{
+  "public_https": true,
+  "public_health": "HTTP 200",
+  "public_admin_page": "HTTP 200; brand-catalog UI present",
+  "public_admin_auth": "401_without_auth",
+  "public_authenticated_version": "matched",
+  "public_judge": "nonce and HMAC verified over normal TLS",
+  "public_judge_exit_ip": "global; matches server"
+}

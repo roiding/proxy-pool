@@ -1,0 +1,33 @@
+{
+  "release": "supplywait-20261106-8e23869c8d2b",
+  "observed_at": "2026-11-06T12:28:02.488728+00:00",
+  "started_at": "2026-11-06T12:17:19.17283922Z",
+  "health": "healthy",
+  "restart_policy": "unless-stopped",
+  "restarts": 0,
+  "target": 100,
+  "ready": 24,
+  "jobs_since_start": 4,
+  "active_jobs": 0,
+  "zero_probe_exhausted_jobs": 0,
+  "last_job_stop_reason": "inventory_exhausted",
+  "last_job_finished_at": "2026-11-06T12:24:11.369612959Z",
+  "waiting_after_exhaustion_seconds": 231.119116,
+  "probed": 987,
+  "failed": 963,
+  "download_batches_unchanged": true,
+  "application_errors_since_start": 0,
+  "quick_check": [
+    "ok"
+  ],
+  "foreign_key_errors": [],
+  "preserved_counts": {
+    "sources": 4,
+    "projects": 1,
+    "leases": 19,
+    "proxy_resources": 0,
+    "api_keys": 0,
+    "upload_keys": 0
+  },
+  "build_cache_removed": true
+}
