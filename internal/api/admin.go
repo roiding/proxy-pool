@@ -39,6 +39,7 @@ func (s *Server) handleSourcesOverview(w http.ResponseWriter, r *http.Request) {
 		sqlite.SourceOverview
 		ChannelID   string                       `json:"channel_id"`
 		ChannelName string                       `json:"channel_name"`
+		Transports  []domain.Transport           `json:"transports"`
 		Cache       *application.StaticCacheView `json:"cache,omitempty"`
 		FetchState  *sqlite.SourceFetchState     `json:"fetch_state,omitempty"`
 	}
@@ -46,6 +47,7 @@ func (s *Server) handleSourcesOverview(w http.ResponseWriter, r *http.Request) {
 	for _, overview := range overviews {
 		row := view{SourceOverview: overview}
 		row.ChannelID, row.ChannelName = application.SourceChannelIdentity(domain.Source{ID: overview.SourceID, ConfigJSON: overview.ConfigJSON})
+		_, row.Transports = application.SourceProtocolMetadata(domain.Source{ID: overview.SourceID, ConfigJSON: overview.ConfigJSON})
 		if overview.AdapterType == application.AdapterSite || overview.AdapterType == application.AdapterStatic || overview.AdapterType == application.AdapterAccount || overview.AdapterType == application.AdapterProvider {
 			cache := s.ingest.CacheViewForSource(domain.Source{ID: overview.SourceID, ConfigVersion: overview.ConfigVersion, Enabled: overview.Enabled})
 			row.Cache = &cache

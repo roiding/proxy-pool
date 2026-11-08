@@ -1,0 +1,43 @@
+{
+  "version": "fixedchannels-20261108-c6f972d999cb",
+  "health": "ok",
+  "network": "none",
+  "published_ports": false,
+  "integrity": "ok",
+  "foreign_keys": "ok",
+  "sources": [
+    {
+      "source_id": "builtin-freeproxy-socks5",
+      "enabled": true
+    },
+    {
+      "source_id": "builtin-proxyscrape-socks5",
+      "enabled": true
+    },
+    {
+      "source_id": "builtin-scdn-socks5",
+      "enabled": true
+    },
+    {
+      "source_id": "freeproxy-http",
+      "enabled": true
+    },
+    {
+      "source_id": "own",
+      "enabled": true
+    },
+    {
+      "source_id": "proxyscrape-elite",
+      "enabled": true
+    },
+    {
+      "source_id": "scdn-http",
+      "enabled": true
+    },
+    {
+      "source_id": "spys-http",
+      "enabled": true
+    }
+  ],
+  "automatic_target_disabled_in_copy_only": true
+}

@@ -1,0 +1,63 @@
+{
+  "projects": [
+    {
+      "project_id": "default",
+      "name": "Default",
+      "enabled": true,
+      "defaults": {
+        "auto_prewarm_target": 10,
+        "network_reuse_cooldown_ms": 1800000,
+        "cooldown_ms": 0,
+        "timeout_ms": 0,
+        "validation": {
+          "mode": "",
+          "target_host_port": "",
+          "profile": "",
+          "security_hash": ""
+        }
+      },
+      "allowed_source_ids": null,
+      "config_version": 3,
+      "created_at": "2026-11-04T11:00:01.965685458Z",
+      "updated_at": "2026-11-07T14:39:13.521014661Z"
+    }
+  ],
+  "sources": [
+    {
+      "source_id": "freeproxy-http",
+      "channel_id": "freeproxy",
+      "enabled": true,
+      "adapter_type": "site_fetch",
+      "config_version": 2
+    },
+    {
+      "source_id": "own",
+      "channel_id": "own",
+      "enabled": true,
+      "adapter_type": "custom",
+      "config_version": 1
+    },
+    {
+      "source_id": "proxyscrape-elite",
+      "channel_id": "proxyscrape",
+      "enabled": true,
+      "adapter_type": "site_fetch",
+      "config_version": 2
+    },
+    {
+      "source_id": "scdn-http",
+      "channel_id": "scdn",
+      "enabled": true,
+      "adapter_type": "provider_api",
+      "config_version": 3
+    },
+    {
+      "source_id": "spys-http",
+      "channel_id": "spys",
+      "enabled": true,
+      "adapter_type": "site_fetch",
+      "config_version": 2
+    }
+  ],
+  "target_met_check_interval_ms": 300000
+}

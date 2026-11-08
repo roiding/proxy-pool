@@ -1,0 +1,30 @@
+{
+  "region": "ap-southeast-3",
+  "project_id": "01a14e8aeae374c79e155112e9f225fb",
+  "l_instance_id": "6ad8ba01a83ac34d79fbe3a2",
+  "public_ip": "188.239.18.99",
+  "eip_id": "8d9d67c3-32f7-41d0-a9e5-edb6ba2e8aca",
+  "traffic_package_id": "564b02f8-dfe9-4ddd-9579-9cad92f5921e",
+  "gb_measure_ids": [
+    10,
+    17,
+    93
+  ],
+  "temporary_credentials": "RMS discovery and BSS quota reads passed",
+  "stored_credentials": "RMS discovery and BSS quota reads passed",
+  "resource_discovery": "GET https://rms.myhuaweicloud.com/v1/resource-manager/domains/{domain_id}/all-resources",
+  "quota_interface": "POST https://bss.myhuaweicloud.com/v2/payments/free-resources/usages/details/query",
+  "quota_response": {
+    "amount_gb": 1023.543,
+    "original_amount_gb": 1024,
+    "used_gb": 0.457,
+    "measure_id": 10,
+    "quota_reuse_cycle": 4,
+    "quota_reuse_cycle_type": 2,
+    "start_time": "2026-10-21T12:00:00Z",
+    "end_time": "2026-11-21T16:00:00Z",
+    "usage_type_name": "上行流量"
+  },
+  "published_sdk_interface": true,
+  "live_quota_payload_verified": true
+}

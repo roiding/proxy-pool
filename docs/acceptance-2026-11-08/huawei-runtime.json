@@ -1,0 +1,247 @@
+{
+  "health": "healthy",
+  "status": "running",
+  "image": "proxy-pool:fixedchannels-20261108-c6f972d999cb",
+  "restarts": 0,
+  "channels": [
+    {
+      "channel_id": "freeproxy",
+      "name": "Free-Proxy-List",
+      "transports": [
+        "http",
+        "socks5"
+      ],
+      "enabled": true,
+      "partially_enabled": false,
+      "requires_secret": false,
+      "available": true,
+      "version": "f630bc1ec267cd043eaa7f93006aa9523c40026ad276b33a4227663448bc5d60",
+      "source_ids": [
+        "builtin-freeproxy-socks5",
+        "freeproxy-http"
+      ]
+    },
+    {
+      "channel_id": "geonode",
+      "name": "Geonode",
+      "transports": [
+        "http",
+        "socks5"
+      ],
+      "enabled": false,
+      "partially_enabled": false,
+      "requires_secret": false,
+      "available": true,
+      "version": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "source_ids": []
+    },
+    {
+      "channel_id": "ihuan",
+      "name": "小幻免费代理",
+      "transports": [
+        "http"
+      ],
+      "enabled": false,
+      "partially_enabled": false,
+      "requires_secret": false,
+      "available": true,
+      "version": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "source_ids": []
+    },
+    {
+      "channel_id": "ip3366",
+      "name": "云代理",
+      "transports": [
+        "http"
+      ],
+      "enabled": false,
+      "partially_enabled": false,
+      "requires_secret": false,
+      "available": true,
+      "version": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "source_ids": []
+    },
+    {
+      "channel_id": "ip89",
+      "name": "89免费代理",
+      "transports": [
+        "http"
+      ],
+      "enabled": false,
+      "partially_enabled": false,
+      "requires_secret": false,
+      "available": true,
+      "version": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "source_ids": []
+    },
+    {
+      "channel_id": "jiliuip",
+      "name": "积流代理",
+      "transports": [
+        "http"
+      ],
+      "enabled": false,
+      "partially_enabled": false,
+      "requires_secret": false,
+      "available": true,
+      "version": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "source_ids": []
+    },
+    {
+      "channel_id": "lumiproxy",
+      "name": "LumiProxy",
+      "transports": [
+        "http"
+      ],
+      "enabled": false,
+      "partially_enabled": false,
+      "requires_secret": false,
+      "available": true,
+      "version": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "source_ids": []
+    },
+    {
+      "channel_id": "monosans",
+      "name": "monosans",
+      "transports": [
+        "http",
+        "socks5"
+      ],
+      "enabled": false,
+      "partially_enabled": false,
+      "requires_secret": false,
+      "available": true,
+      "version": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "source_ids": []
+    },
+    {
+      "channel_id": "openproxylist",
+      "name": "OpenProxyList",
+      "transports": [
+        "http"
+      ],
+      "enabled": false,
+      "partially_enabled": false,
+      "requires_secret": false,
+      "available": true,
+      "version": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "source_ids": []
+    },
+    {
+      "channel_id": "proxyscrape",
+      "name": "ProxyScrape",
+      "transports": [
+        "http",
+        "socks5"
+      ],
+      "enabled": true,
+      "partially_enabled": false,
+      "requires_secret": false,
+      "available": true,
+      "version": "34f972e243629280d8b9f897dd2db55139f2731e3244a2bbbcdc701b0f742ab6",
+      "source_ids": [
+        "builtin-proxyscrape-socks5",
+        "proxyscrape-elite"
+      ]
+    },
+    {
+      "channel_id": "qiyunip",
+      "name": "齐云代理",
+      "transports": [
+        "http"
+      ],
+      "enabled": false,
+      "partially_enabled": false,
+      "requires_secret": false,
+      "available": true,
+      "version": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "source_ids": []
+    },
+    {
+      "channel_id": "scdn",
+      "name": "SCDN",
+      "transports": [
+        "http",
+        "socks5"
+      ],
+      "enabled": true,
+      "partially_enabled": false,
+      "requires_secret": false,
+      "available": true,
+      "version": "8e77a1adcd58152d8fdc85955cee45bbf89baffbccf2d878a1326555b8a3a1cf",
+      "source_ids": [
+        "builtin-scdn-socks5",
+        "scdn-http"
+      ]
+    },
+    {
+      "channel_id": "source:own",
+      "name": "own",
+      "transports": [
+        "http",
+        "socks5"
+      ],
+      "enabled": true,
+      "partially_enabled": false,
+      "requires_secret": false,
+      "available": true,
+      "version": "9d39a98e9399877df19b127e936aa602e8859249fd40d5edcba0d30c1616ee44",
+      "source_ids": [
+        "own"
+      ]
+    },
+    {
+      "channel_id": "spys",
+      "name": "Spys",
+      "transports": [
+        "http"
+      ],
+      "enabled": true,
+      "partially_enabled": false,
+      "requires_secret": false,
+      "available": true,
+      "version": "9ffb059f078036d89ce731673999afe52ebe00b76062aaf70d3c99cf62308402",
+      "source_ids": [
+        "spys-http"
+      ]
+    },
+    {
+      "channel_id": "webshare",
+      "name": "Webshare",
+      "transports": [
+        "http",
+        "socks5"
+      ],
+      "enabled": false,
+      "partially_enabled": false,
+      "requires_secret": true,
+      "available": false,
+      "version": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "source_ids": []
+    }
+  ],
+  "projects": [
+    {
+      "project_id": "default",
+      "name": "Default",
+      "enabled": true,
+      "defaults": {
+        "auto_prewarm_target": 10,
+        "network_reuse_cooldown_ms": 1800000,
+        "cooldown_ms": 0,
+        "timeout_ms": 0,
+        "validation": {
+          "mode": "",
+          "target_host_port": "",
+          "profile": "",
+          "security_hash": ""
+        }
+      },
+      "allowed_source_ids": null,
+      "config_version": 3,
+      "created_at": "2026-11-04T11:00:01.965685458Z",
+      "updated_at": "2026-11-07T14:39:13.521014661Z"
+    }
+  ],
+  "version": "fixedchannels-20261108-c6f972d999cb"
+}

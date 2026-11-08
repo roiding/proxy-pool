@@ -46,7 +46,24 @@ they no longer control list/upload PASS reuse. `validation.valid_until` is null 
 uploads and the batch deadline for ordinary list deliveries, never a fabricated
 physical expiry. See [the lifecycle change record](docs/proxy-lifecycle-2026-11-05.md).
 The current Huawei deployment and bounded real-network checks are recorded in
-[the unified-channel release record](docs/unified-channels-and-console-2026-11-05.md).
+[the fixed-channel release record](docs/fixed-channels-2026-11-08.md).
+
+## Channel switches
+
+The admin console lists built-in suppliers with one switch per channel. HTTP
+and SOCKS5 endpoints are managed together; protocol selection, URLs, page
+limits and fetch parameters are supplied by the application. Enabling an
+unregistered public supplier creates its fixed protocol definitions without
+fetching immediately. Existing enabled suppliers receive missing supported
+protocols on startup. Disabled suppliers stay disabled. Account channels need
+an existing encrypted credential connection before their switch becomes usable.
+Uploaded inventory remains a separate channel, with direct import available
+under “上传自己的资源”.
+
+`GET /api/v1/admin/channels` returns the fixed list and its switch versions.
+`PATCH /api/v1/admin/channels/{id}` accepts `enabled` and `version`; the switch
+and missing protocol definitions commit together. Legacy source APIs remain
+available for integrations, with source IDs and private permissions preserved.
 
 ## Current Contract
 
@@ -391,10 +408,18 @@ encrypted with `secret_encryption_key` and never returned in plaintext. An
 explicit admin clear is persisted as a sentinel, so a restart cannot silently
 resurrect a cleared bootstrap credential or region.
 
-The production Huawei traffic reader is intentionally unavailable until the
-official Flexus L billing/measurement API, permissions, accounting period, and
-units are verified. The console must show that absence; it must not fabricate
-zero usage or claim official billing data.
+The production Huawei reader signs read-only requests with AK/SK. It first
+queries the official RMS resource graph for the configured Flexus L instance,
+finds its `huaweicloudinternal_cbc_freeresource` child, then calls the official
+BSS `ListFreeResourceUsages` API. The generic BSS resource-package list excludes
+this instance bundle. Set `huawei_region` and the L-instance ID as
+`huawei_resource_id`; leave `huawei_package_id` empty to discover its current
+package, or set the package ID to query it directly. The reader requires IAM
+project-read, RMS resource-read, and the corresponding BSS read permissions.
+Quota amounts are GB, and the cloud's package total and actual start/end period
+take precedence over the configured fallback total and calendar month. The
+interface does not report its data-update timestamp, so `as_of` is the query
+sample time and the snapshot notes the possible cloud-side delay.
 
 Usage thresholds only notify. They never stop acquisition, fetching, probing,
 or prewarm. Failed daily reads keep the last valid snapshot marked stale. The
@@ -464,6 +489,13 @@ only its own usage tables.
 
 ### CI Release Artifact
 
+Production container releases must be committed and pushed to GitHub `main`,
+then pass the `docker` Actions workflow. Pull that commit's
+`ghcr.io/roiding/proxy-pool:sha-<short-sha>` image, verify the OCI revision
+against the complete commit, and deploy its immutable registry digest after
+the database-copy preflight and backup. Do not build production replacements
+on the server or upload binaries from a developer working tree.
+
 The `docker` workflow runs formatting, `go vet`, the full normal test suite,
 and the race suite before publishing either image or native artifacts. Its
 `native-linux-amd64` job produces a statically linked amd64 Go executable with
@@ -490,7 +522,7 @@ CGO-backed, the CI path builds the Dockerfile's Alpine/musl `release` stage,
 which uses the same static-link checks as the image. Only Linux amd64 is
 published; no aarch64 or 32-bit artifact is claimed.
 
-Container build:
+Local development container build:
 
 ```sh
 docker build -t proxy-pool .

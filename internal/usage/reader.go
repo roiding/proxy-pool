@@ -8,12 +8,7 @@ import (
 	"time"
 )
 
-// readerUnavailableNote is the honest status shown in the admin console:
-// no official Flexus L traffic-package API has been verified yet, so no real
-// Huawei reader is built. Configuring credentials does not enable billing
-// changes or resource access of any kind.
-const readerUnavailableNote = "华为云官方流量口径尚未核实：暂无可用读取器，" +
-	"不会产生任何用量数据或自动停服行为。填写凭证不会授权资源创建、修改、删除或付费。"
+const readerUnavailableNote = "华为云套餐读取未配置：请填写 AK/SK、区域和 L 实例 ID，流量包 ID 可自动识别。"
 
 var ErrUsageReaderUnavailable = errors.New(readerUnavailableNote)
 
@@ -30,8 +25,8 @@ type Snapshot struct {
 	Note        string
 }
 
-// UsageReader produces usage samples. Tests provide mocks; production has
-// no reader until the external verification gate (plan §13.3) passes.
+// UsageReader produces usage samples. Production reads the Flexus L quota;
+// tests may supply independent fixture readers.
 type UsageReader interface {
 	ReadMonthlyUsage(ctx context.Context) (Snapshot, error)
 }

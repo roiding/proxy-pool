@@ -342,13 +342,13 @@ async function renderOverview() {
   jobsPanel.append(jobsBox);
   root.append(statsPanel, el("div", { class: "grid2" }, valPanel, jobsPanel));
   const stats = await api("/api/v1/admin/stats");
-  const channels = await api("/api/v1/admin/sources");
+  const [channels, fixedChannels] = await Promise.all([api("/api/v1/admin/sources"), api("/api/v1/admin/channels")]);
   const networkPassed = channels.reduce((n, s) => n + (s.cache?.fresh ? (s.cache.verified || 0) : 0), 0);
   const networkBlocked = channels.reduce((n, s) => n + (s.cache?.fresh ? (s.cache.blacklisted || 0) : 0), 0);
   statsBox.textContent = "";
   for (const [k, v] of [
-    ["渠道实例", stats.sources], ["上传资源", stats.resources], ["启用上传库存", stats.enabled_offers],
-    ["网络已通过（按渠道计）", networkPassed], ["网络黑名单（按渠道计）", networkBlocked],
+    ["已开启渠道", fixedChannels.filter((channel) => channel.enabled).length], ["上传资源", stats.resources], ["启用上传库存", stats.enabled_offers],
+    ["网络已通过（累计记录）", networkPassed], ["网络黑名单（累计记录）", networkBlocked],
     ["活跃租约", stats.active_leases], ["进行中预约", stats.active_reservations],
     ["验活通过次数", stats.attempt_pass ?? 0], ["验活失败次数", stats.attempt_fail ?? 0],
   ]) {
@@ -387,7 +387,7 @@ async function renderOverview() {
         usage.stale ? el("span", { class: "warn", text: "数据已过期" })
                     : el("span", { class: "ok", text: "数据时间 " + fmtTime(usage.snapshot.as_of) })));
     } else {
-      up.append(el("div", { class: "muted", text: usage.last_error || "暂无用量数据（尚未取得官方流量口径）" }));
+      up.append(el("div", { class: "muted", text: usage.last_error || usage.reader_note || "暂无用量数据，请执行一次用量检查。" }));
     }
     root.append(up);
   }
@@ -395,31 +395,13 @@ async function renderOverview() {
 
 /* ---------- 渠道 ---------- */
 
-const sourceState = { list: [], adapters: [], templates: [], selected: null, detail: null, requestSeq: 0 };
+const sourceState = { channels: [], list: [], selected: null };
 const LIST_ADAPTERS = new Set(["site_fetch", "static_url", "account_list", "provider_api"]);
 const ADAPTER_LABELS = {
   custom: "上传代理列表", provider_api: "品牌 API 渠道", site_fetch: "站点列表",
   static_url: "通用静态列表", account_list: "账号列表",
 };
-const COUNTRY_CHOICES = [
-  ["", "全球 / 不限"], ["CN", "中国"], ["US", "美国"], ["GB", "英国"], ["DE", "德国"], ["JP", "日本"],
-  ["SG", "新加坡"], ["HK", "中国香港"], ["TW", "中国台湾"], ["KR", "韩国"], ["CA", "加拿大"],
-  ["AU", "澳大利亚"], ["FR", "法国"], ["NL", "荷兰"], ["IN", "印度"], ["BR", "巴西"],
-];
 let channelFieldSeq = 0;
-const channelStateText = (state) => ({ active: "可适配，待实测", paused: "暂停", awaiting_protocol: "待协议核验",
-  awaiting_contract: "待厂商契约", awaiting_credentials: "待账号配置", incompatible: "TLS 契约不兼容", retired: "旧入口退役" }[state] || state || "未知");
-
-function cloneObject(value) {
-  try { return JSON.parse(JSON.stringify(value && typeof value === "object" ? value : {})); }
-  catch (_) { return {}; }
-}
-
-function ensureOption(select, value, label) {
-  if (![...select.options].some((option) => option.value === value)) {
-    select.append(el("option", { value, text: label || value }));
-  }
-}
 
 function field(labelText, control, hintText) {
   if (!control.id) control.id = "channel-field-" + (++channelFieldSeq);
@@ -764,255 +746,6 @@ function sourceUploadPanel() {
   return { panel, importer };
 }
 
-function siteConfigChoices(currentSiteID) {
-  const choices = new Map();
-  const brand = sourceState.templates.find((template) => templateVariants(template).some((variant) => variant.config?.site?.site_id === currentSiteID));
-  for (const template of brand ? [brand] : sourceState.templates) {
-    for (const variant of templateVariants(template)) {
-      const siteID = variant.config?.site?.site_id;
-      if (!siteID) continue;
-      choices.set(siteID, {
-        value: siteID,
-        label: (template.brand || template.name || template.id) + " · " + (variant.name || variant.id) +
-          "（" + transportText(variant.transports) + "）",
-      });
-    }
-  }
-  return [...choices.values()];
-}
-
-function buildChannelConfigEditor(adapterType, initialConfig) {
-  let currentAdapter = adapterType || "custom";
-  let sourceConfig = cloneObject(initialConfig);
-  const simple = el("div");
-  const advancedBody = el("div");
-  const diagnostics = el("pre", { class: "json" });
-  const root = el("div");
-  let controls = {};
-
-  function configValue() {
-    const cfg = cloneObject(sourceConfig);
-    if (currentAdapter === "provider_api") {
-      cfg.provider = cfg.provider && typeof cfg.provider === "object" ? cfg.provider : {};
-      cfg.provider.vendor_id = cfg.provider.vendor_id || "scdn";
-      cfg.provider.protocol = controls.protocol?.value || "http";
-      const fetchCount = Number(controls.fetchCount?.value || 0);
-      if (fetchCount > 0) cfg.provider.fetch_count = Math.trunc(fetchCount);
-      else delete cfg.provider.fetch_count;
-      const country = String(controls.country?.value || "").trim().toUpperCase();
-      if (country) cfg.provider.country_code = country;
-      else delete cfg.provider.country_code;
-      const intervalSec = Number(controls.intervalSec?.value || 0);
-      if (intervalSec > 0) cfg.provider.min_fetch_interval_ms = Math.trunc(intervalSec * 1000);
-      else delete cfg.provider.min_fetch_interval_ms;
-    } else if (currentAdapter === "site_fetch") {
-      cfg.site = cfg.site && typeof cfg.site === "object" ? cfg.site : {};
-      cfg.site.site_id = controls.siteID?.value || "";
-      const maxPages = Number(controls.maxPages?.value || 0);
-      if (maxPages > 0) cfg.site.max_pages = Math.trunc(maxPages);
-      else delete cfg.site.max_pages;
-    } else if (currentAdapter === "static_url") {
-      cfg.static = cfg.static && typeof cfg.static === "object" ? cfg.static : {};
-      cfg.static.url = String(controls.url?.value || "").trim();
-      cfg.static.default_transport = controls.transport?.value || "http";
-    } else if (currentAdapter === "account_list") {
-      cfg.account = cfg.account && typeof cfg.account === "object" ? cfg.account : {};
-      cfg.account.vendor_id = cfg.account.vendor_id || "webshare";
-      cfg.account.protocol = controls.protocol?.value || "http";
-    } else {
-      cfg.default_transport = controls.transport?.value || "http";
-    }
-
-    if (LIST_ADAPTERS.has(currentAdapter) && controls.maxCandidates) {
-      const maxCandidates = Number(controls.maxCandidates.value || 0);
-      if (maxCandidates > 0) {
-        cfg.refresh = cfg.refresh && typeof cfg.refresh === "object" ? cfg.refresh : { mode: "demand" };
-        cfg.refresh.max_candidates = Math.trunc(maxCandidates);
-      } else if (cfg.refresh && typeof cfg.refresh === "object") {
-        delete cfg.refresh.max_candidates;
-      }
-    }
-
-    const scopeMode = controls.scopeMode?.value || "public";
-    if (scopeMode === "public") {
-      delete cfg.access;
-    } else {
-      cfg.access = cfg.access && typeof cfg.access === "object" ? cfg.access : {};
-      cfg.access.project_ids = scopeMode === "custom"
-        ? [...new Set(String(controls.projectIDs?.value || "").split("\n").map((id) => id.trim()).filter(Boolean))]
-        : [];
-    }
-    return cfg;
-  }
-
-  function validateConfig() {
-    if (currentAdapter === "provider_api") {
-      if (!["http", "https", "socks5"].includes(controls.protocol?.value)) return "请选择支持的代理协议";
-      const count = Number(controls.fetchCount?.value || 0);
-      if (!Number.isInteger(count) || count < 1 || count > 20) return "单次拉取数需为 1–20";
-      const country = String(controls.country?.value || "").trim().toUpperCase();
-      if (country && !/^[A-Z]{2}$/.test(country)) return "国家/地区请填写两位代码，例如 US";
-      const intervalSec = Number(controls.intervalSec?.value || 0);
-      if (!Number.isFinite(intervalSec) || intervalSec < 0 || intervalSec > 86400) return "最短拉取间隔需在 0–86400 秒";
-    }
-    if (currentAdapter === "site_fetch") {
-      if (!controls.siteID?.value) return "请选择站点配置选项";
-      const pages = Number(controls.maxPages?.value || 0);
-      if (!Number.isInteger(pages) || pages < 0 || pages > 20) return "最多页数需为 0–20（0 使用渠道默认）";
-    }
-    if (currentAdapter === "static_url" && !String(controls.url?.value || "").trim()) return "请填写静态列表 URL";
-    if (currentAdapter === "account_list" && !["http", "socks5"].includes(controls.protocol?.value)) {
-      return "协议需为 HTTP 或 SOCKS5";
-    }
-    if (controls.maxCandidates) {
-      const maxCandidates = Number(controls.maxCandidates.value || 0);
-      if (maxCandidates && (!Number.isInteger(maxCandidates) || maxCandidates < 1 || maxCandidates > 1000)) {
-        return "最大缓存条数需为 1–1000";
-      }
-    }
-    if (currentAdapter === "account_list" && controls.scopeMode?.value === "public") {
-      return "账号渠道必须显式选择允许项目，不能设为公开";
-    }
-    return "";
-  }
-
-  function syncDiagnostics() {
-    diagnostics.textContent = JSON.stringify(configValue(), null, 2);
-  }
-
-  function paint(nextAdapter, nextConfig) {
-    currentAdapter = nextAdapter || "custom";
-    sourceConfig = cloneObject(nextConfig);
-    simple.textContent = "";
-    advancedBody.textContent = "";
-    controls = {};
-
-    if (currentAdapter === "provider_api") {
-      const provider = sourceConfig.provider || {};
-      const protocol = el("select", {},
-        el("option", { value: "http", text: "HTTP" }),
-        el("option", { value: "https", text: "HTTP CONNECT" }),
-        el("option", { value: "socks5", text: "SOCKS5" }));
-      ensureOption(protocol, provider.protocol || "http", String(provider.protocol || "http").toUpperCase());
-      protocol.value = provider.protocol || "http";
-      const fetchCount = el("input", { type: "number", min: "1", max: "20", step: "1",
-        value: String(provider.fetch_count || 20) });
-      const countryID = "country-options-" + (++channelFieldSeq);
-      const country = el("input", { type: "text", list: countryID, value: provider.country_code || "",
-        placeholder: "可选，例如 US", autocomplete: "off" });
-      const countryList = el("datalist", { id: countryID },
-        ...COUNTRY_CHOICES.map(([value, label]) => el("option", { value, text: label })));
-      controls.protocol = protocol;
-      controls.fetchCount = fetchCount;
-      controls.country = country;
-      simple.append(
-        field("协议", protocol),
-        field("单次拉取数", fetchCount, "SCDN 上游单次限制 1–20"),
-        field("国家 / 地区（可选）", country, "可输入两位国家代码"), countryList);
-      const intervalSec = el("input", { type: "number", min: "0", max: "86400", step: "1",
-        value: String(Math.round((provider.min_fetch_interval_ms || 0) / 1000)) });
-      controls.intervalSec = intervalSec;
-      advancedBody.append(field("最短拉取间隔（秒，0 = 使用默认）", intervalSec));
-    } else if (currentAdapter === "site_fetch") {
-      const site = sourceConfig.site || {};
-      const siteID = el("select");
-      for (const choice of siteConfigChoices(site.site_id)) siteID.append(el("option", { value: choice.value, text: choice.label }));
-      ensureOption(siteID, site.site_id || "", site.site_id || "请选择站点");
-      siteID.value = site.site_id || "";
-      const maxPages = el("input", { type: "number", min: "0", max: "20", step: "1",
-        value: String(site.max_pages || 0) });
-      controls.siteID = siteID;
-      controls.maxPages = maxPages;
-      simple.append(
-        field("配置选项（品牌 / 站点 / 协议）", siteID),
-        field("最多页数", maxPages, "0 使用渠道默认；上限 20 页"));
-    } else if (currentAdapter === "static_url") {
-      const stat = sourceConfig.static || {};
-      const url = el("input", { type: "text", value: stat.url || "", placeholder: "https://example.com/list.txt", spellcheck: "false" });
-      const transport = el("select", {},
-        el("option", { value: "http", text: "HTTP" }),
-        el("option", { value: "socks5", text: "SOCKS5" }));
-      transport.value = stat.default_transport || "http";
-      controls.url = url;
-      controls.transport = transport;
-      simple.append(field("列表 URL", url), field("默认协议", transport));
-    } else if (currentAdapter === "account_list") {
-      const account = sourceConfig.account || {};
-      const protocol = el("select", {},
-        el("option", { value: "http", text: "HTTP" }),
-        el("option", { value: "socks5", text: "SOCKS5" }));
-      protocol.value = account.protocol || "http";
-      controls.protocol = protocol;
-      simple.append(field("协议", protocol), el("p", { class: "notice",
-        text: "账号 API Key 在下方专用区域加密填写，不会写入渠道配置。" }));
-    } else {
-      const transport = el("select", {},
-        el("option", { value: "http", text: "HTTP" }),
-        el("option", { value: "socks5", text: "SOCKS5" }));
-      transport.value = sourceConfig.default_transport || "http";
-      controls.transport = transport;
-      simple.append(field("默认协议", transport));
-    }
-
-    if (LIST_ADAPTERS.has(currentAdapter)) {
-      const maxCandidates = el("input", { type: "number", min: "1", max: "1000", step: "1",
-        value: String(sourceConfig.refresh?.max_candidates || "") });
-      controls.maxCandidates = maxCandidates;
-      advancedBody.append(field("最大缓存条数", maxCandidates, "留空使用默认上限；范围 1–1000"));
-    }
-
-    const projectIDs = sourceConfig.access?.project_ids;
-    const scopeMode = el("select");
-    if (currentAdapter !== "account_list") {
-      scopeMode.append(el("option", { value: "public", text: "公开（仍受下游项目允许范围限制）" }));
-    }
-    scopeMode.append(
-      el("option", { value: "none", text: "不允许任何项目" }),
-      el("option", { value: "custom", text: "指定项目" }));
-    if (projectIDs == null) scopeMode.value = currentAdapter === "account_list" ? "none" : "public";
-    else if (projectIDs.length === 0) scopeMode.value = "none";
-    else scopeMode.value = "custom";
-    const projectIDBox = el("textarea", { placeholder: "每行一个项目 ID" });
-    projectIDBox.value = Array.isArray(projectIDs) ? projectIDs.join("\n") : "";
-    projectIDBox.disabled = scopeMode.value !== "custom";
-    scopeMode.addEventListener("change", () => { projectIDBox.disabled = scopeMode.value !== "custom"; syncDiagnostics(); });
-    controls.scopeMode = scopeMode;
-    controls.projectIDs = projectIDBox;
-    advancedBody.append(
-      field("允许项目范围", scopeMode, currentAdapter === "account_list"
-        ? "账号渠道必须明确授权项目；空列表表示不授权任何项目。"
-        : "不展开修改时会保留原范围。"),
-      field("指定项目 ID", projectIDBox));
-
-    const fold = el("details", { class: "fold" },
-      el("summary", { text: "高级设置" }), advancedBody);
-    const diag = el("details", { class: "fold" },
-      el("summary", { text: "只读配置诊断（日常无需打开，不含账号 Key）" }), diagnostics);
-    root.textContent = "";
-    root.append(simple, fold, diag);
-    syncDiagnostics();
-  }
-
-  root.addEventListener("input", syncDiagnostics);
-  root.addEventListener("change", syncDiagnostics);
-  paint(currentAdapter, sourceConfig);
-  return {
-    node: root,
-    update: paint,
-    value: configValue,
-    validate: validateConfig,
-  };
-}
-
-function templateVariants(template) {
-  if (Array.isArray(template?.variants)) return template.variants.filter((variant) => variant?.config);
-  if (template?.config) {
-    return [{ id: template.config?.site?.site_id || template.id, name: template.name || template.id,
-      transports: template.transports || [], config: template.config, parser_version: template.parser_version }];
-  }
-  return [];
-}
-
 function uniqueTransports(values) {
   const out = [];
   for (const value of values || []) {
@@ -1025,92 +758,8 @@ function uniqueTransports(values) {
   });
 }
 
-function templateTransports(template) {
-  const values = [...(template?.transports || [])];
-  for (const variant of templateVariants(template)) values.push(...(variant.transports || []));
-  return uniqueTransports(values);
-}
-
 function transportText(transports) {
   return uniqueTransports(transports).map((transport) => transport.toUpperCase()).join(" / ") || "—";
-}
-
-function templateSummary(template) {
-  if (template?.adapter_type === "provider_api") return "品牌 API 渠道，由后台统一维护缓存与验活。";
-  if (template?.adapter_type === "account_list") return "读取已分配代理，账号 Key 独立加密保存。";
-  if (template?.adapter_type === "site_fetch") return "公开站点列表，由后台统一维护缓存。";
-  return "网络渠道，由后台统一维护缓存。";
-}
-
-function adapterForConfig(config) {
-  if (config?.provider) return "provider_api";
-  if (config?.site) return "site_fetch";
-  if (config?.static) return "static_url";
-  if (config?.account) return "account_list";
-  return "custom";
-}
-
-function suggestedSourceID(template, variant) {
-  if (variant?.config?.site) return variant.id;
-  return template.id + "-" + variant.id;
-}
-
-function findTemplateVariant(detail) {
-  const siteID = detail?.config?.site?.site_id;
-  if (siteID) {
-    for (const template of sourceState.templates) {
-      const variant = templateVariants(template).find((item) => item.config?.site?.site_id === siteID);
-      if (variant) return { template, variant };
-    }
-  }
-  const account = detail?.config?.account;
-  if (account?.vendor_id && account?.protocol) {
-    for (const template of sourceState.templates) {
-      const variant = templateVariants(template).find((item) => {
-        const candidate = item.config?.account;
-        return candidate?.vendor_id === account.vendor_id && candidate?.protocol === account.protocol;
-      });
-      if (variant) return { template, variant };
-    }
-  }
-  const provider = detail?.config?.provider;
-  if (provider?.protocol) {
-    for (const template of sourceState.templates) {
-      const variant = templateVariants(template).find((item) => {
-        const candidate = item.config?.provider;
-        return candidate && (candidate.vendor_id || "scdn") === (provider.vendor_id || "scdn") &&
-          candidate.protocol === provider.protocol;
-      });
-      if (variant) return { template, variant };
-    }
-  }
-  for (const template of sourceState.templates) {
-    const variant = templateVariants(template).find((item) =>
-      detail?.source_id === item.id || detail?.source_id === template.id + "-" + item.id);
-    if (variant) return { template, variant };
-  }
-  return null;
-}
-
-function sourceGroup(s) {
-  const id = String(s.channel_id || "").trim() || s.source_id;
-  const name = String(s.channel_name || "").trim() || s.source_id;
-  return { id, name };
-}
-
-function groupedSourceRows() {
-  const groups = new Map();
-  for (const source of sourceState.list) {
-    const identity = sourceGroup(source);
-    if (!groups.has(identity.id)) groups.set(identity.id, { identity, rows: [] });
-    groups.get(identity.id).rows.push(source);
-  }
-  return [...groups.values()]
-    .sort((a, b) => a.identity.name.localeCompare(b.identity.name, "zh-CN"))
-    .flatMap((group) => {
-      const rows = group.rows.sort((a, b) => a.source_id.localeCompare(b.source_id));
-      return rows.map((source) => ({ group: { identity: group.identity, count: rows.length }, source }));
-    });
 }
 
 async function renderSources(options = {}) {
@@ -1118,63 +767,84 @@ async function renderSources(options = {}) {
   if (!root.dataset.built) {
     root.textContent = "";
     const upload = sourceUploadPanel();
-    root.append(upload.panel,
-      el("p", { class: "hint", text: "自有代理资源可直接从上方文件或文本导入。下方按品牌选择网络渠道并查看已有实例；新建网络渠道后默认停用，可在详情启用。" }));
-    const grid = el("div", { class: "grid2" });
-    const left = el("div", { class: "panel" }, el("h2", { text: "渠道实例（按品牌分组，source_id 不合并）" }));
-    const srcTable = table([{ label: "ID" }, { label: "类型" }, { label: "启停" }, { label: "缓存 / 通过 / 黑名单" }, { label: "熔断" }]);
+    root.append(el("p", { class: "hint", text: "渠道已内置，日常只需开关。HTTP / SOCKS5 属于同一渠道；抓取地址、协议适配和拉取参数由程序管理。" }));
+    const grid = el("div");
+    const left = el("div", { class: "panel" }, el("h2", { text: "渠道" }));
+    const srcTable = table([{ label: "渠道" }, { label: "支持协议" }, { label: "开关" },
+      { label: "缓存 / 已通过 / 黑名单" }, { label: "状态" }]);
     left.append(srcTable);
     const pagerBox = el("div");
     left.append(pagerBox);
-    const right = el("div", {});
-    const detailPanel = el("div", { class: "panel" }, el("h2", { text: "渠道详情" }),
-      el("div", { class: "muted", text: "左侧选择一个渠道查看配置与操作。" }));
-    const createPanel = el("div", { class: "panel" }, el("h2", { text: "新建渠道" }));
-    buildSourceCreateForm(createPanel);
-    right.append(detailPanel, createPanel);
-    grid.append(left, right);
+    const detailPanel = el("div", { class: "panel", hidden: "" }, el("h2", { text: "运行状态" }),
+      el("div", { class: "muted", text: "点击渠道名称查看运行状态。" }));
+    grid.append(left, detailPanel);
     root.dataset.built = "1";
     root._upload = upload.importer;
     root._table = srcTable;
-    root._pager = pager(pagerBox, () => sourceState.list.length);
+    root._pager = pager(pagerBox, () => sourceState.channels.length);
     root._pager.addEventListener("pagechange", () => paintSourceRows());
     root._detail = detailPanel;
     const uploadKeys = uploadKeysPanel();
     root._ukTable = uploadKeys._table;
-    const catalogPanel = el("div", { class: "panel" }, el("h2", { text: "渠道模板（按品牌）" }),
-      el("p", { class: "notice", text: "按品牌查看可创建的渠道与协议；选择模板后会带入常用设置。" }));
-    root._catalog = table([{ label: "品牌" }, { label: "配置选项" }, { label: "协议" }, { label: "说明" }]);
-    catalogPanel.append(root._catalog);
-    root.append(grid, catalogPanel, uploadKeys);
+    root.append(grid,
+      el("details", { class: "fold" }, el("summary", { text: "上传自己的资源" }), upload.panel),
+      el("details", { class: "fold" }, el("summary", { text: "程序上传密钥" }), uploadKeys));
   }
-  const [overviews, adapters, catalog] = await Promise.all([
-    api("/api/v1/admin/sources"), api("/api/v1/admin/adapters"), api("/api/v1/admin/channel-templates")]);
+  const [overviews, channels] = await Promise.all([
+    api("/api/v1/admin/sources"), api("/api/v1/admin/channels")]);
   sourceState.list = overviews || [];
-  sourceState.adapters = (adapters && adapters.adapters) || [];
-  sourceState.templates = (catalog && catalog.templates) || [];
+  sourceState.channels = channels || [];
   root._upload.refreshTargets(sourceState.list);
   root._pager.render();
-  root._catalog.body.textContent = "";
-  if (!sourceState.templates.length) {
-    root._catalog.body.append(el("tr", {}, el("td", { colspan: "4", class: "muted", text: "暂无可构建品牌模板" })));
-  }
-  for (const t of sourceState.templates) {
-    const variants = templateVariants(t);
-    const variantList = el("div", { class: "mono", style: "margin-top:6px" });
-    for (const variant of variants) {
-      variantList.append(el("div", { text: (variant.name || variant.id) + " · " + transportText(variant.transports) }));
-    }
-    const variantCell = el("td", {}, el("details", {},
-      el("summary", { text: variants.length + " 个配置选项" }), variantList));
-    root._catalog.body.append(el("tr", {},
-      el("td", {}, el("div", { text: t.brand || t.name || t.id }),
-        el("div", { class: "mono muted", text: t.id })),
-      variantCell,
-      el("td", { class: "mono", text: transportText(templateTransports(t)) }),
-      el("td", { class: "muted", text: templateSummary(t) })));
-  }
   paintUploadKeys(root._ukTable);
-  if (sourceState.selected && options.refreshDetail !== false) await paintSourceDetail();
+  if (sourceState.selected && options.refreshDetail !== false) paintFixedChannelDetail();
+}
+
+function fixedChannelMembers(channel) {
+  return sourceState.list.filter((source) => channel.source_ids.includes(source.source_id));
+}
+
+function fixedChannelCacheText(channel) {
+  const members = fixedChannelMembers(channel);
+  if (members.length && members.every((source) => source.adapter_type === "custom")) {
+    return "上传库存 " + members.reduce((total, source) => total + (source.enabled_offers || 0), 0);
+  }
+  const total = { candidates: 0, verified: 0, blacklisted: 0 };
+  for (const source of members) {
+    if (!source.enabled || !source.cache?.fresh) continue;
+    for (const key of Object.keys(total)) total[key] += source.cache[key] || 0;
+  }
+  return total.candidates + " / " + total.verified + " / " + total.blacklisted;
+}
+
+function paintFixedChannelDetail() {
+  const panel = $("view-sources")._detail;
+  panel.textContent = "";
+  const channel = sourceState.channels.find((item) => item.channel_id === sourceState.selected);
+  panel.hidden = !channel;
+  panel.append(el("h2", { text: channel ? channel.name + " · 运行状态" : "运行状态" }));
+  if (!channel) {
+    panel.append(el("p", { class: "muted", text: "点击渠道名称查看运行状态。" }));
+    return;
+  }
+  panel.append(el("p", { text: channel.requires_secret && !channel.available ? "尚未接入账号" : (channel.enabled ? "已开启" : "已关闭") }),
+    el("p", { class: "notice", text: "支持协议：" + transportText(channel.transports) + "。此渠道的协议和拉取参数已内置。" }));
+  const members = fixedChannelMembers(channel);
+  if (!members.length) {
+    panel.append(el("p", { class: "muted", text: channel.requires_secret
+      ? "账号渠道在完成凭据接入后可开启。" : "开启后会自动加入供给，按项目的自动补足目标或取号请求进行验活。" }));
+  }
+  for (const source of members) {
+    const cache = source.cache || {}, fetchState = source.fetch_state || {};
+    panel.append(el("dl", { class: "kv" },
+      el("dt", { text: "协议" }), el("dd", { text: transportText(source.transports) }),
+      el("dt", { text: source.adapter_type === "custom" ? "上传库存" : "缓存 / 已通过 / 黑名单" }),
+      el("dd", { text: source.adapter_type === "custom" ? String(source.enabled_offers || 0) : sourceCacheText(source) }),
+      el("dt", { text: "最近验活" }), el("dd", { text: fmtTime(source.last_validated_at) }),
+      el("dt", { text: "最近抓取" }), el("dd", { text: fmtTime(cache.fetched_at) }),
+      el("dt", { text: "最近抓取错误" }), el("dd", { text: fetchState.last_error_code || "—" })));
+  }
+  panel.append(el("p", { class: "hint", text: "已通过是此前验活的记录；同范围请求可复用。缓存记录按协议累计。" }));
 }
 
 function uploadKeysPanel() {
@@ -1246,355 +916,41 @@ function paintSourceRows() {
   const { page, size } = root._pager.page();
   const tbl = root._table;
   tbl.body.textContent = "";
-  const rows = groupedSourceRows().slice((page - 1) * size, page * size);
-  if (!rows.length) tbl.body.append(el("tr", {}, el("td", { colspan: "5", class: "muted", text: "暂无渠道" })));
-  let groupID = "";
-  for (const { group, source: s } of rows) {
-    if (group.identity.id !== groupID) {
-      groupID = group.identity.id;
-      const label = group.identity.name + " · " + group.count + " 个实例" +
-        (group.identity.id !== group.identity.name ? " · " + group.identity.id : "");
-      tbl.body.append(el("tr", { class: "group-row" },
-        el("td", { colspan: "5", text: label })));
+  const channels = sourceState.channels.slice((page - 1) * size, page * size);
+  if (!channels.length) tbl.body.append(el("tr", {}, el("td", { colspan: "5", class: "muted", text: "暂无渠道" })));
+  for (const channel of channels) {
+    const members = fixedChannelMembers(channel);
+    const blocked = members.filter((source) => source.enabled && source.circuit_state === "OPEN").length;
+    const switchButton = el("button", { class: channel.enabled ? "btn primary" : "btn", type: "button",
+      role: "switch", "aria-checked": String(channel.enabled), "aria-label": channel.name + "开关",
+      text: channel.enabled ? "已开启" : "已关闭", onclick: async (event) => {
+        event.stopPropagation();
+        switchButton.disabled = true;
+        try {
+          await api("/api/v1/admin/channels/" + encodeURIComponent(channel.channel_id), {
+            method: "PATCH", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: !channel.enabled, version: channel.version }) });
+          await renderSources();
+        } catch (err) {
+          alert("开关更新失败：" + err.message);
+          await renderSources();
+        } finally { switchButton.disabled = false; }
+      } });
+    if (!channel.available && !channel.enabled) {
+      switchButton.disabled = true;
+      switchButton.textContent = channel.requires_secret ? "待接入账号" : "暂不可用";
     }
-    const tr = el("tr", { class: "click" + (sourceState.selected === s.source_id ? " selected" : ""),
-      onclick: () => selectSource(s.source_id) },
-      el("td", { class: "mono", text: s.source_id }),
-      el("td", { text: ADAPTER_LABELS[s.adapter_type] || s.adapter_type }),
-      el("td", {}, el("span", { class: s.enabled ? "ok" : "muted", text: s.enabled ? "启用" : "停用" })),
-      el("td", { class: "num", text: sourceCacheText(s) }),
-      el("td", {}, el("span", { class: s.circuit_state === "OPEN" ? "warn" : "muted", text: s.circuit_state || "CLOSED" })));
+    const tr = el("tr", { class: "click" + (sourceState.selected === channel.channel_id ? " selected" : ""),
+      onclick: () => { sourceState.selected = channel.channel_id; paintSourceRows(); paintFixedChannelDetail(); } },
+      el("td", { text: channel.name }),
+      el("td", { text: transportText(channel.transports) }),
+      el("td", {}, switchButton),
+      el("td", { class: "num", text: fixedChannelCacheText(channel) }),
+      el("td", { class: blocked ? "warn" : "muted", text: channel.partially_enabled ? "部分协议开启" :
+        (blocked ? "抓取暂时退避" : channel.enabled ? "参与供给" : "未开启") }));
     tbl.body.append(tr);
   }
 }
-
-async function selectSource(id) {
-  const seq = ++sourceState.requestSeq;
-  sourceState.selected = id;
-  paintSourceRows();
-  await paintSourceDetail("", seq);
-}
-
-async function paintSourceDetail(errText, requestSeq, msgKind = "err") {
-  const seq = requestSeq === undefined ? ++sourceState.requestSeq : requestSeq;
-  const panel = $("view-sources")._detail;
-  panel.textContent = "";
-  panel.append(el("h2", { text: "渠道详情" }));
-  if (!sourceState.selected) {
-    panel.append(el("div", { class: "muted", text: "左侧选择一个渠道查看配置与操作。" }));
-    return;
-  }
-  const id = sourceState.selected;
-  const msg = el("div", { class: "msg" });
-  if (errText) setMsg(msg, errText, msgKind);
-  let detail;
-  try {
-    detail = await api("/api/v1/admin/sources/" + encodeURIComponent(id));
-  } catch (err) {
-    if (seq !== sourceState.requestSeq || sourceState.selected !== id) return;
-    panel.append(el("div", { class: "bad", text: "读取失败：" + err.message }));
-    return;
-  }
-  if (seq !== sourceState.requestSeq || sourceState.selected !== id) return;
-  sourceState.detail = detail;
-  const overview = sourceState.list.find((s) => s.source_id === id) || {};
-  panel.append(el("dl", { class: "kv" },
-    el("dt", { text: "ID" }), el("dd", { class: "mono", text: detail.source_id }),
-    el("dt", { text: "渠道类型" }), el("dd", { text: ADAPTER_LABELS[detail.adapter_type] || detail.adapter_type }),
-    el("dt", { text: "本配置验活通过/失败（次数）" }), el("dd", { class: "mono", text: (overview.attempt_pass ?? "—") + " / " + (overview.attempt_fail ?? "—") }),
-    el("dt", { text: "最近验活" }), el("dd", { class: "mono", text: fmtTime(overview.last_validated_at) }),
-    el("dt", { text: "熔断" }), el("dd", { class: "mono", text: (overview.circuit_state || "CLOSED") +
-      (overview.source_cooldown_until ? "（至 " + fmtTime(overview.source_cooldown_until) + "）" : "") })));
-  const templateMatch = findTemplateVariant(detail);
-  if (templateMatch) {
-    const { template, variant } = templateMatch;
-    panel.append(el("p", { class: "notice", text:
-      "品牌模板：" + (template.brand || template.name || template.id) + " · " + (variant.name || variant.id) +
-      "（" + transportText(variant.transports) + "）。状态：" + channelStateText(template.state) + "。" }));
-  }
-  if (LIST_ADAPTERS.has(detail.adapter_type)) {
-    const c = overview.cache || {}, f = overview.fetch_state || {};
-    panel.append(el("dl", { class: "kv" },
-      el("dt", { text: "缓存候选 / 已通过 / 黑名单" }), el("dd", { text: (c.candidates ?? 0) + " / " + (c.verified ?? 0) + " / " + (c.blacklisted ?? 0) + (c.fresh ? "（新鲜）" : "（空或过期，不供给）") }),
-      el("dt", { text: "抓取 / 到期" }), el("dd", { text: fmtTime(c.fetched_at) + " / " + fmtTime(c.expires_at) }),
-      el("dt", { text: "最近抓取错误" }), el("dd", { text: f.last_error_code || "—" })));
-    panel.append(el("p", { class: "notice", text: "网络渠道由后台统一维护缓存与验活；通过记录和临时黑名单按渠道展示。" }));
-  }
-  const editor = buildChannelConfigEditor(detail.adapter_type, detail.config);
-  const saveBtn = el("button", { class: "btn", text: "保存设置", type: "button" });
-  const enableBtn = el("button", { class: "btn", text: detail.enabled ? "停用渠道" : "启用渠道", type: "button" });
-  const delBtn = el("button", { class: "btn danger", text: "删除渠道", type: "button" });
-  const actions = el("div", { class: "row", style: "margin-top:10px" });
-  actions.append(saveBtn, enableBtn);
-  if (!detail.enabled && templateMatch && templateMatch.template.runnable === false) enableBtn.disabled = true;
-  if (LIST_ADAPTERS.has(detail.adapter_type)) {
-    const prewarmBtn = el("button", { class: "btn primary", text: "补充并验活", type: "button", onclick: async () => {
-      prewarmBtn.disabled = true;
-      setMsg(msg, "提交补充并验活任务…", "info");
-      try {
-        const job = await api("/api/v1/prewarm", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ count: 1, timeout: 30, source_ids: [id], validation: { mode: "basic" } }),
-        });
-        setMsg(msg, "已提交任务 " + job.job_id + "，可在「任务」查看验活结果。", "good");
-      } catch (err) { setMsg(msg, "提交失败：" + err.message, "err"); }
-      finally { prewarmBtn.disabled = !detail.enabled; }
-    }});
-    prewarmBtn.disabled = !detail.enabled;
-    actions.append(prewarmBtn);
-  }
-  if (detail.adapter_type === "custom") {
-    actions.append(el("button", { class: "btn", text: "手动验活", type: "button",
-      onclick: async () => {
-        setMsg(msg, "已提交验活…", "info");
-        try {
-          await api("/api/v1/admin/sources/" + encodeURIComponent(id) + "/validate", { method: "POST" });
-          setMsg(msg, "验活任务已启动。", "good");
-        } catch (err) { setMsg(msg, "验活失败：" + err.message, "err"); }
-      } }));
-  }
-  panel.append(editor.node, actions, msg);
-  if (LIST_ADAPTERS.has(detail.adapter_type)) {
-    const refresh = el("button", { class: "btn", text: "仅刷新缓存", type: "button", onclick: async () => {
-      refresh.disabled = true;
-      setMsg(msg, "提交刷新任务…", "info");
-      try {
-        const job = await api("/api/v1/admin/sources/" + encodeURIComponent(id) + "/refresh", { method: "POST" });
-        setMsg(msg, "已创建刷新任务 " + job.job_id + "，可在「任务」查看。", "good");
-      } catch (err) { setMsg(msg, "刷新失败：" + err.message, "err"); }
-      finally { refresh.disabled = !detail.enabled; }
-    }});
-    refresh.disabled = !detail.enabled;
-    panel.append(el("details", { class: "fold" },
-      el("summary", { text: "高级操作" }),
-      el("div", { style: "margin-top:8px;display:flex;gap:8px;flex-wrap:wrap" }, refresh, delBtn)));
-  } else {
-    panel.append(el("details", { class: "fold" },
-      el("summary", { text: "高级操作" }),
-      el("div", { style: "margin-top:8px;display:flex;gap:8px;flex-wrap:wrap" }, delBtn)));
-  }
-  if (detail.adapter_type === "account_list") {
-    const secretPanel = el("div", { class: "panel", style: "margin-top:14px" }, el("h2", { text: "账号 API Key（加密、只写、不回显）" }));
-    const keyInput = el("input", { type: "password", autocomplete: "new-password", placeholder: "输入新的 Webshare API Key" });
-    const keyInfo = el("p", { class: "notice", text: "读取密钥状态…" });
-    const secretMsg = el("div", { class: "msg" });
-    const rotate = el("button", { class: "btn", type: "button", text: "保存 / 轮换 Key", onclick: async () => {
-      const value = keyInput.value.trim(); keyInput.value = "";
-      if (!value) { setMsg(secretMsg, "请填写新的 Key；清除请用专用按钮。", "err"); return; }
-      rotate.disabled = true;
-      try {
-        await api("/api/v1/admin/sources/" + encodeURIComponent(id) + "/secret", { method: "PUT", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ config_version: detail.config_version, value }) });
-        await renderSources();
-        if (sourceState.selected === id) await paintSourceDetail("Key 已加密更新；旧批次/证据已失效，项目 CD 保留。", undefined, "good");
-      } catch (err) { setMsg(secretMsg, "更新失败（冲突时请刷新）：" + err.message, "err"); }
-      finally { rotate.disabled = false; }
-    }});
-    const clear = el("button", { class: "btn danger", type: "button", text: "清除 Key", onclick: async () => {
-      if (!confirm("清除账号 Key 并失效该源全部缓存？不会清空项目 CD。")) return;
-      keyInput.value = "";
-      try {
-        await api("/api/v1/admin/sources/" + encodeURIComponent(id) + "/secret", { method: "DELETE", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ config_version: detail.config_version }) });
-        await renderSources();
-        if (sourceState.selected === id) await paintSourceDetail("账号 Key 已清除，不会在重启时自动恢复。", undefined, "good");
-      } catch (err) { setMsg(secretMsg, "清除失败：" + err.message, "err"); }
-    }});
-    secretPanel.append(keyInfo, keyInput, el("div", { class: "row", style: "margin-top:8px" }, rotate, clear), secretMsg);
-    panel.append(secretPanel);
-    api("/api/v1/admin/sources/" + encodeURIComponent(id) + "/secret").then((status) => {
-      if (seq !== sourceState.requestSeq || sourceState.selected !== id) return;
-      keyInfo.textContent = (status.configured ? "已配置，密钥版本 " + status.secret_version : "尚未配置") +
-        (status.encryption_ready ? "；部署加密已启用。" : "；请先在部署配置设置 secret_encryption_key（至少 32 字节），绝不能使用明文配置替代。");
-      rotate.disabled = !status.encryption_ready;
-      if (!detail.enabled && !status.configured) enableBtn.disabled = true;
-    }).catch((err) => { keyInfo.textContent = "状态读取失败：" + err.message; });
-  }
-  if (detail.adapter_type === "custom") {
-    const importer = buildSourceImporter({
-      fixedSourceID: id,
-      title: "向此渠道添加资源",
-      description: "选择 TXT / JSON 文件或直接粘贴，追加合并到当前上传渠道，不覆盖已有库存。",
-    });
-    panel.append(el("div", { style: "margin-top:14px" }, importer.node));
-  }
-  saveBtn.addEventListener("click", async () => {
-    const validationError = editor.validate();
-    if (validationError) { setMsg(msg, validationError, "err"); return; }
-    const cfg = editor.value();
-    setMsg(msg, "保存中…", "info");
-    try {
-      await api("/api/v1/admin/sources/" + encodeURIComponent(id), {
-        method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config_version: detail.config_version, config: cfg }) });
-      await renderSources();
-      if (sourceState.selected === id) await paintSourceDetail("已保存。开启项目自动维持后，后台会按新设置补充。", undefined, "good");
-    } catch (err) {
-      if (err.code === "SOURCE_VERSION_CONFLICT" || err.status === 409) {
-        setMsg(msg, "保存冲突：配置已被他人修改（" + err.message + "）。已为你重新加载最新版本，请合并后重试。", "err");
-        if (sourceState.selected === id) await paintSourceDetail("保存冲突：已重新加载最新版本，请合并后重试。");
-      } else setMsg(msg, "保存失败：" + err.message, "err");
-    }
-  });
-  enableBtn.addEventListener("click", async () => {
-    setMsg(msg, "提交中…", "info");
-    try {
-      await api("/api/v1/admin/sources/" + encodeURIComponent(id), {
-        method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config_version: detail.config_version,
-          enabled: !detail.enabled }) });
-      await renderSources();
-      if (sourceState.selected === id) await paintSourceDetail("已更新启停状态；后台会自动维护启用渠道的缓存与验活。", undefined, "good");
-    } catch (err) { setMsg(msg, "操作失败：" + err.message, "err"); }
-  });
-  delBtn.addEventListener("click", async () => {
-    if (!confirm("删除渠道 " + id + "？其库存与资源会一并清理，且不可恢复。")) return;
-    try {
-      const res = await api("/api/v1/admin/sources/" + encodeURIComponent(id), { method: "DELETE" });
-      setMsg(msg, "已删除（清理供给记录 " + res.removed_offers + " 条）。", "good");
-      sourceState.selected = null;
-      await renderSources();
-      await paintSourceDetail();
-    } catch (err) { setMsg(msg, "删除失败：" + err.message, "err"); }
-  });
-}
-
-function buildSourceCreateForm(panel) {
-  const msg = el("div", { class: "msg" });
-  const idInput = el("input", { type: "text", placeholder: "小写渠道 ID，例如 openproxy-http", spellcheck: "false" });
-  const templateSelect = el("select", {}, el("option", { value: "", text: "选择品牌模板" }));
-  const variantSelect = el("select", { disabled: "" });
-  const kindSelect = el("select");
-  const kindNote = el("p", { class: "notice", text: "加载代码注册表与模板…" });
-  const editorHost = el("div");
-  let editor = buildChannelConfigEditor("custom", { default_transport: "http" });
-  editorHost.append(editor.node);
-  let suggestedID = "";
-  const defaults = { custom: { default_transport: "http" }, provider_api: { provider: { vendor_id: "scdn", protocol: "http", fetch_count: 20 } },
-    site_fetch: { site: { site_id: "openproxylist-http", max_pages: 1 }, refresh: { mode: "demand", max_candidates: 1000 } },
-    static_url: { static: { url: "https://example.com/list.txt", default_transport: "http" }, refresh: { mode: "demand", max_candidates: 1000 } },
-    account_list: { account: { vendor_id: "webshare", protocol: "http", mode: "direct", page_size: 100, max_pages: 10 },
-      access: { project_ids: [] }, refresh: { mode: "demand", cache_ttl_ms: 1800000, max_candidates: 1000 } } };
-  function selectedTemplate() {
-    return sourceState.templates.find((template) => template.id === templateSelect.value);
-  }
-  function selectedVariant(template = selectedTemplate()) {
-    return templateVariants(template).find((variant) => variant.id === variantSelect.value);
-  }
-  function updateNote() {
-    const template = selectedTemplate();
-    const variant = selectedVariant(template);
-    if (template && variant) {
-      kindNote.textContent = (template.brand || template.name || template.id) + " · " + (variant.name || variant.id) +
-        "（" + transportText(variant.transports) + "）。状态：" + channelStateText(template.state) + "。";
-    } else {
-      kindNote.textContent = (ADAPTER_LABELS[kindSelect.value] || "渠道") + "。选择品牌和配置选项可快速填入常用设置。";
-    }
-    if (kindSelect.value === "account_list") {
-      kindNote.textContent += " API Key 在创建后的专用区域加密填写，不会写入渠道配置。";
-    } else if (kindSelect.value === "provider_api") {
-      kindNote.textContent += " 后台会统一维护缓存与验活。";
-    }
-  }
-  function paintVariants(template) {
-    variantSelect.textContent = "";
-    const variants = templateVariants(template);
-    if (!template) {
-      variantSelect.append(el("option", { value: "", text: "先选择品牌模板" }));
-      variantSelect.disabled = true;
-      updateNote();
-      return;
-    }
-    if (!variants.length) {
-      variantSelect.append(el("option", { value: "", text: "该品牌暂无可用配置" }));
-      variantSelect.disabled = true;
-      updateNote();
-      return;
-    }
-    for (const variant of variants) {
-      variantSelect.append(el("option", { value: variant.id,
-        text: (variant.name || variant.id) + " · " + transportText(variant.transports) }));
-    }
-    variantSelect.disabled = false;
-    variantSelect.value = variants[0].id;
-    applyVariant(template, variants[0]);
-  }
-  function applyVariant(template, variant) {
-    if (!template || !variant) return;
-    const adapter = adapterForConfig(variant.config);
-    const config = cloneObject(variant.config ?? template.config ?? {});
-    if (adapter === "provider_api" && config.provider) config.provider.fetch_count = 20;
-    kindSelect.value = adapter;
-    editor.update(adapter, config);
-    const nextID = suggestedSourceID(template, variant);
-    if (!idInput.value.trim() || idInput.value.trim() === suggestedID) {
-      idInput.value = nextID;
-      suggestedID = nextID;
-    }
-    updateNote();
-  }
-  idInput.addEventListener("input", () => {
-    if (idInput.value.trim() !== suggestedID) suggestedID = "";
-  });
-  kindSelect.addEventListener("change", () => {
-    templateSelect.value = "";
-    paintVariants(null);
-    editor.update(kindSelect.value, defaults[kindSelect.value] || {});
-    updateNote();
-  });
-  templateSelect.addEventListener("change", () => {
-    paintVariants(selectedTemplate());
-  });
-  variantSelect.addEventListener("change", () => {
-    const template = selectedTemplate();
-    applyVariant(template, selectedVariant(template));
-  });
-  const createBtn = el("button", { class: "btn primary", text: "创建渠道", type: "button", onclick: async () => {
-    const id = idInput.value.trim();
-    if (!id) { setMsg(msg, "请填写渠道 ID", "err"); return; }
-    const validationError = editor.validate();
-    if (validationError) { setMsg(msg, validationError, "err"); return; }
-    const config = editor.value();
-    const adapterType = adapterForConfig(config);
-    if (adapterType !== kindSelect.value) { setMsg(msg, "表单配置与渠道类型不一致，请重新选择。", "err"); return; }
-    createBtn.disabled = true;
-    try {
-      await api("/api/v1/admin/sources", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source_id: id, adapter_type: adapterType, config, enabled: false }) });
-      setMsg(msg, "", "good");
-      idInput.value = ""; suggestedID = ""; templateSelect.value = ""; paintVariants(null);
-      sourceState.selected = id;
-      await renderSources(); await paintSourceDetail("已创建停用渠道。如需账号 Key，请在详情中填写后启用。", undefined, "good");
-    } catch (err) { setMsg(msg, "创建失败：" + err.message, "err"); }
-    finally { createBtn.disabled = false; }
-  }});
-  panel.append(el("label", { text: "渠道 ID（每个实例独立 source_id）" }), idInput,
-    el("label", { text: "品牌" }), templateSelect,
-    el("label", { text: "配置选项（协议 / 站点 / 账号）" }), variantSelect,
-    el("label", { text: "渠道类型" }), kindSelect, kindNote,
-    editorHost,
-    el("p", { class: "notice", text: "创建后默认停用，可在详情启用。高级设置通常无需修改；网络渠道由后台统一维护缓存与验活。" }),
-    createBtn, msg);
-  Promise.all([api("/api/v1/admin/adapters"), api("/api/v1/admin/channel-templates")]).then(([registry, catalog]) => {
-    sourceState.adapters = registry.adapters || []; sourceState.templates = catalog.templates || [];
-    for (const adapter of sourceState.adapters) {
-      kindSelect.append(el("option", { value: adapter.id,
-        text: (ADAPTER_LABELS[adapter.id] || adapter.id) + "（" + adapter.id + "）" }));
-    }
-    for (const template of sourceState.templates) {
-      const variants = templateVariants(template);
-      if (!variants.length) continue;
-      templateSelect.append(el("option", { value: template.id,
-        text: (template.brand || template.name || template.id) + " · " + variants.length + " 个配置选项" }));
-    }
-    kindSelect.value = "custom";
-    paintVariants(null);
-    editor.update("custom", defaults.custom);
-    updateNote();
-  }).catch((err) => { kindNote.textContent = "模板加载失败：" + err.message; createBtn.disabled = true; });
-}
-
-/* ---------- 本地库存 ---------- */
 
 async function renderInventory() {
   const root = $("view-inventory");
@@ -2048,7 +1404,7 @@ async function renderSessions() {
 async function renderAlerts() {
   const root = $("view-alerts");
   root.textContent = "";
-  root.append(el("p", { class: "hint", text: "华为云流量与 Bark 通知。官方流量口径尚未核实：读取器停用，不会编造用量；阈值只触发通知，绝不影响取号。填写凭证不会授权任何资源操作或付费。" }));
+  root.append(el("p", { class: "hint", text: "通过华为云 RMS 从 L 实例找到流量包，再调用 BSS ListFreeResourceUsages 读取余量。按套餐实际使用周期发送 Bark 流量告警；失败时保留上次数据。" }));
   const settingsPanel = el("div", { class: "panel" }, el("h2", { text: "通知与凭证设置" }));
   const msg = el("div", { class: "msg" });
   const usagePanel = el("div", { class: "panel" }, el("h2", { text: "用量与通知记录" }));
@@ -2066,9 +1422,9 @@ async function renderAlerts() {
   const akClear = el("input", { type: "checkbox" });
   const sk = el("input", { type: "password", placeholder: view.huawei.configured ? "已配置（输入留空保持不变）" : "Huawei Secret Access Key" });
   const skClear = el("input", { type: "checkbox" });
-  const region = el("input", { type: "text", value: view.huawei.region || "" });
-  const resource = el("input", { type: "text", value: view.huawei.resource_id || "" });
-  const pkg = el("input", { type: "text", value: view.huawei.package_id || "" });
+  const region = el("input", { type: "text", value: view.huawei.region || "", placeholder: "区域，如 ap-southeast-3" });
+  const resource = el("input", { type: "text", value: view.huawei.resource_id || "", placeholder: "L 实例 ID" });
+  const pkg = el("input", { type: "text", value: view.huawei.package_id || "", placeholder: "流量包 ID，可留空自动识别" });
   const total = el("input", { type: "number", value: String(view.monthly_total_gb || 0), min: "0" });
   const threshold = el("input", { type: "number", value: String(view.threshold_percent ?? 80), min: "1", max: "100" });
   const checkTime = el("input", { type: "text", value: view.check_time || "09:00" });
@@ -2116,10 +1472,10 @@ async function renderAlerts() {
     el("div", { class: "clearrow" }, akClear, el("span", { text: "显式清除已存 AK" })),
     el("label", { text: "华为云 Secret Access Key（留空保持不变）" }), sk,
     el("div", { class: "clearrow" }, skClear, el("span", { text: "显式清除已存 SK" })),
-    el("label", { text: "区域 / 资源 ID / 流量包 ID" }),
+    el("label", { text: "区域 / L 实例 ID / 流量包 ID（自动识别）" }),
     el("div", { class: "row" }, region, resource, pkg),
     el("div", { class: "row" },
-      el("div", {}, el("label", { text: "月度总量（GB，0 = 未设定）" }), total),
+      el("div", {}, el("label", { text: "备用总量（GB，云端套餐额度优先）" }), total),
       el("div", {}, el("label", { text: "告警阈值（%）" }), threshold)),
     el("div", { class: "row" },
       el("div", {}, el("label", { text: "每日检查时间（HH:MM）" }), checkTime),
@@ -2131,21 +1487,27 @@ async function renderAlerts() {
     msg);
 
   const usage = await api("/api/v1/admin/usage");
+  const readerLabels = { unconfigured: "待配置", configured: "已配置，待读取", active: "已接入", error: "读取失败" };
+  usagePanel.append(el("p", { class: usage.reader_status === "error" ? "bad" : "muted", text:
+    "读取状态：" + (readerLabels[usage.reader_status] || usage.reader_status) }));
+  if (usage.last_error) usagePanel.append(el("p", { class: "bad", text: "最近一次查询失败：" + usage.last_error }));
   if (usage.snapshot) {
     const s = usage.snapshot;
     usagePanel.append(el("dl", { class: "kv" },
       el("dt", { text: "已用/总量" }), el("dd", { class: "mono", text: s.used_gb + " / " + s.total_gb + " GB" }),
       el("dt", { text: "剩余" }), el("dd", { class: "mono", text: s.remaining_gb === null || s.remaining_gb === undefined ? "未知" : s.remaining_gb + " GB" }),
       el("dt", { text: "数据口径" }), el("dd", { text: s.source }),
-      el("dt", { text: "云方数据时间" }), el("dd", { class: "mono", text: fmtTime(s.as_of) }),
+      el("dt", { text: "使用周期" }), el("dd", { class: "mono", text: fmtTime(s.period_start) + " 至 " + fmtTime(s.period_end) }),
+      el("dt", { text: "采样时间" }), el("dd", { class: "mono", text: fmtTime(s.as_of) }),
       el("dt", { text: "本次查询时间" }), el("dd", { class: "mono", text: fmtTime(s.queried_at) })));
+    if (s.note) usagePanel.append(el("p", { class: "muted", text: s.note }));
     usagePanel.append(el("p", {}, usage.stale ?
       el("span", { class: "warn", text: "数据已过期（超过 48 小时未成功刷新或最近一次查询失败）。" }) :
       el("span", { class: "ok", text: "数据新鲜。" })));
   } else {
-    usagePanel.append(el("p", { class: "muted", text: "暂无用量快照。" +
-      (usage.last_error ? "最近一次查询失败：" + usage.last_error : "读取器尚未验证官方接口。") }));
+    usagePanel.append(el("p", { class: "muted", text: "暂无用量快照。" }));
   }
+  usagePanel.append(el("p", { class: "muted", text: usage.reader_note || view.reader_note || "" }));
   const refreshBtn = el("button", { class: "btn", text: "立即执行一次用量检查", type: "button" });
   const refreshMsg = el("div", { class: "msg" });
   refreshBtn.addEventListener("click", async () => {

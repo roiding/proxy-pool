@@ -1,0 +1,36 @@
+{
+  "normal_tests": "go test -count=1 ./... passed",
+  "race_tests": "go test -race -count=1 ./... passed",
+  "vet": "go vet ./... passed",
+  "javascript_syntax": "node --check passed",
+  "browser": "in-app browser, real authenticated local API",
+  "ui_checks": [
+    "fixed supplier rows",
+    "no protocol/URL/page/count configuration forms",
+    "ProxyScrape single switch on/off/on",
+    "HTTP and SOCKS5 managed together",
+    "upload section collapsed",
+    "unconnected Webshare switch disabled"
+  ],
+  "channel_count": 14,
+  "proxyscrape": {
+    "channel_id": "proxyscrape",
+    "name": "ProxyScrape",
+    "transports": [
+      "http",
+      "socks5"
+    ],
+    "enabled": true,
+    "partially_enabled": false,
+    "requires_secret": false,
+    "available": true,
+    "version": "5e6bfaf24ac7b347f95ac9277f3473e0742bf381319e7c4b1c1ec81669fcb1ef",
+    "source_ids": [
+      "builtin-proxyscrape-http",
+      "builtin-proxyscrape-socks5"
+    ]
+  },
+  "source_count": 2,
+  "validation_attempts": 0,
+  "jobs": 0
+}

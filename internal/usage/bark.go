@@ -224,10 +224,25 @@ func (c *BarkClient) attempt(ctx context.Context, payload []byte) error {
 		return fmt.Errorf("bark push failed: connection error (%s)", urlErrorKind(err))
 	}
 	defer resp.Body.Close()
-	// The body is drained but never surfaced: remote content is untrusted
-	// and could echo the device key.
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8192))
+	// Check Bark's application acknowledgement without echoing remote text,
+	// which could contain the device key. Empty 2xx gateway replies remain
+	// compatible, but a nonempty reply must be a successful Bark response.
+	data, readErr := io.ReadAll(io.LimitReader(resp.Body, 8193))
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		if readErr != nil || len(data) > 8192 {
+			return errors.New("bark push failed: incomplete acknowledgement")
+		}
+		if len(bytes.TrimSpace(data)) > 0 {
+			var acknowledgement struct {
+				Code *int `json:"code"`
+			}
+			if err := json.Unmarshal(data, &acknowledgement); err != nil || acknowledgement.Code == nil {
+				return errors.New("bark push failed: invalid acknowledgement")
+			}
+			if *acknowledgement.Code != 200 {
+				return errors.New("bark push failed: endpoint rejected notification")
+			}
+		}
 		return nil
 	}
 	return fmt.Errorf("bark push failed: HTTP status %d", resp.StatusCode)

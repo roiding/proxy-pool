@@ -1,0 +1,20 @@
+{
+  "normal": "passed",
+  "race": "passed",
+  "vet": "passed",
+  "javascript_syntax": "passed",
+  "new_checks": [
+    "Huawei request signing",
+    "RMS L-instance traffic-package discovery",
+    "BSS ListFreeResourceUsages response parsing",
+    "direct traffic-package ID query",
+    "actual quota period selection",
+    "missing/ambiguous/invalid quota rejected",
+    "cloud quota used for threshold",
+    "permission failure preserves last snapshot",
+    "cloud errors do not expose credentials",
+    "threshold deduplication uses package period",
+    "daily slot equality does not repeat",
+    "Bark application acknowledgement"
+  ]
+}

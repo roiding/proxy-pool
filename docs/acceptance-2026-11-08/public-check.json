@@ -1,0 +1,6 @@
+{
+  "/admin": 200,
+  "admin_html_matches_release": true,
+  "/healthz": 200,
+  "/api/v1/admin/channels": 401
+}

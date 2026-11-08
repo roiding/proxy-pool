@@ -107,6 +107,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/leases/{id}/feedback", s.handleFeedback)
 
 	// Admin surface: projects, keys, sources, jobs, sessions, settings.
+	mux.HandleFunc("GET /api/v1/admin/channels", s.handleFixedChannels)
+	mux.HandleFunc("PATCH /api/v1/admin/channels/{id}", s.handleFixedChannelSwitch)
 	mux.HandleFunc("GET /api/v1/admin/projects", s.handleListProjects)
 	mux.HandleFunc("POST /api/v1/admin/projects", s.handleCreateProject)
 	mux.HandleFunc("GET /api/v1/admin/projects/{id}", s.handleGetProject)

@@ -501,9 +501,18 @@ func (s *Service) Settings(ctx context.Context) (SettingsView, error) {
 	view.CheckTime = st.CheckTime
 	view.Timezone = st.Timezone
 	view.SecretsWritable = s.masterKeySet
-	view.ReaderStatus = "disabled"
-	view.ReaderNote = readerUnavailableNote
+	view.ReaderStatus, view.ReaderNote = s.readerView(st)
 	return view, nil
+}
+
+func (s *Service) readerView(st settings) (string, string) {
+	if s.defaults.Reader != nil {
+		return "configured", "已接入用量读取器。"
+	}
+	if err := huaweiConfigurationError(st); err != nil {
+		return "unconfigured", err.Error()
+	}
+	return "configured", huaweiReaderNote
 }
 
 func (s *Service) requireBox(needed bool) error {

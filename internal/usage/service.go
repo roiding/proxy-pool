@@ -54,7 +54,7 @@ func New(db *sql.DB, opts Options) (*Service, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	s := &Service{db: db, reader: unavailableReader{}, defaults: opts, Now: opts.Now}
+	s := &Service{db: db, defaults: opts, Now: opts.Now}
 	if opts.MasterKey != "" {
 		box, err := newSealedBox(opts.MasterKey)
 		if err != nil {
@@ -65,6 +65,8 @@ func New(db *sql.DB, opts Options) (*Service, error) {
 	}
 	if opts.Reader != nil {
 		s.reader = opts.Reader
+	} else {
+		s.reader = newHuaweiReader(s)
 	}
 	if err := s.seed(context.Background()); err != nil {
 		return nil, err
@@ -170,15 +172,18 @@ const staleAfter = 48 * time.Hour
 // Status reports the latest snapshot, its freshness and recent notifications.
 func (s *Service) Status(c context.Context) (StatusView, error) {
 	var out StatusView
-	out.ReaderStatus = "disabled"
-	out.ReaderNote = readerUnavailableNote
+	st, err := s.loadSettings(c)
+	if err != nil {
+		return StatusView{}, err
+	}
+	out.ReaderStatus, out.ReaderNote = s.readerView(st)
 	row := s.db.QueryRowContext(c, `
 		SELECT period_start, period_end, as_of, queried_at, used_gb, total_gb,
 		  remaining_gb, source, note
 		FROM usage_snapshots ORDER BY id DESC LIMIT 1`)
 	var snap SnapshotView
 	var remaining sql.NullFloat64
-	err := row.Scan(&snap.PeriodStart, &snap.PeriodEnd, &snap.AsOf, &snap.QueriedAt,
+	err = row.Scan(&snap.PeriodStart, &snap.PeriodEnd, &snap.AsOf, &snap.QueriedAt,
 		&snap.UsedGB, &snap.TotalGB, &remaining, &snap.Source, &snap.Note)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -204,6 +209,13 @@ func (s *Service) Status(c context.Context) (StatusView, error) {
 		out.LastAttemptAt = nullStrPtr(lastAttempt)
 		out.LastSuccessAt = nullStrPtr(lastSuccess)
 		out.LastError = lastError
+	}
+	if out.ReaderStatus == "configured" {
+		if out.LastError != "" {
+			out.ReaderStatus = "error"
+		} else if out.LastSuccessAt != nil {
+			out.ReaderStatus = "active"
+		}
 	}
 	if out.Snapshot != nil {
 		if asOfTime, perr := time.Parse(time.RFC3339Nano, out.Snapshot.AsOf); perr == nil {
@@ -307,10 +319,10 @@ func (s *Service) evaluateThreshold(c context.Context, now time.Time, snap Snaps
 	if err != nil {
 		return err
 	}
-	// The configured monthly total wins when set: the config value is the
-	// operator's billing basis, the reader total is a fallback.
+	// The cloud package quota wins; the configured amount is only a fallback
+	// for readers which cannot supply a total.
 	total := snap.TotalGB
-	if st.MonthlyTotalGB > 0 {
+	if total <= 0 && st.MonthlyTotalGB > 0 {
 		total = float64(st.MonthlyTotalGB)
 	}
 	if total <= 0 {
@@ -320,10 +332,21 @@ func (s *Service) evaluateThreshold(c context.Context, now time.Time, snap Snaps
 	if pct < st.ThresholdPct {
 		return nil
 	}
-	dedup := fmt.Sprintf("usage_threshold|%s|%d",
-		snap.PeriodStart.UTC().Format("2006-01"), st.ThresholdPct)
-	body := fmt.Sprintf("已用 %.1f GB / %.1f GB（%d%%），超过告警阈值 %d%%。数据口径：%s。",
-		snap.UsedGB, total, pct, st.ThresholdPct, snap.Source)
+	resourceIdentity := st.HuaweiResource
+	if resourceIdentity == "" {
+		resourceIdentity = st.HuaweiPackage
+	}
+	dedup := fmt.Sprintf("usage_threshold|%s|%s|%d",
+		resourceIdentity, fmtTime(snap.PeriodStart), st.ThresholdPct)
+	loc := time.UTC
+	if st.Timezone != "" {
+		if configured, err := time.LoadLocation(st.Timezone); err == nil {
+			loc = configured
+		}
+	}
+	body := fmt.Sprintf("已用 %.1f GB / %.1f GB（%d%%），达到告警阈值 %d%%。使用周期：%s 至 %s。数据口径：%s。",
+		snap.UsedGB, total, pct, st.ThresholdPct,
+		snap.PeriodStart.In(loc).Format(time.RFC3339), snap.PeriodEnd.In(loc).Format(time.RFC3339), snap.Source)
 	title := "代理池云流量告警"
 	res, err := s.db.ExecContext(c, `
 		INSERT INTO usage_notifications(dedup_key, kind, title, body, state, attempts,
@@ -564,8 +587,8 @@ func (s *Service) nextScheduledAfterLastSuccess(c context.Context, loc *time.Loc
 	if err := s.db.QueryRowContext(c,
 		`SELECT last_success_at FROM usage_status WHERE id = 1`).Scan(&lastSuccess); err == nil && lastSuccess.Valid {
 		if success, perr := time.Parse(time.RFC3339Nano, lastSuccess.String); perr == nil &&
-			success.In(loc).After(next) {
-			return next.Add(24 * time.Hour)
+			!success.In(loc).Before(next) {
+			return next.AddDate(0, 0, 1)
 		}
 	}
 	return next

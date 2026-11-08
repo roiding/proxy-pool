@@ -100,6 +100,9 @@ func main() {
 		log.Error("static cache config failed", "error", err)
 		os.Exit(1)
 	}
+	if err := ingest.ReconcileEnabledChannels(context.Background()); err != nil {
+		log.Warn("fixed channel reconciliation failed", "error", err)
+	}
 	keys := application.NewKeyService(store, cfg.IdentitySecret)
 	var geoResolver geoip.Resolver
 	if cfg.GeoIPDBPath != "" {

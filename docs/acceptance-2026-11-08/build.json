@@ -1,0 +1,12 @@
+{
+  "version": "fixedchannels-20261108-c6f972d999cb",
+  "source_hash": "c6f972d999cb37f0bf47923f9ade06239cb26bcb773257e3745cb0f00dfad4a4",
+  "archive": "/tmp/proxy-pool-fixed-channels-source.tar.gz",
+  "source_files": 191,
+  "linux_normal_tests": "passed",
+  "linux_vet": "passed",
+  "linux_amd64_static_binaries": "proxy-pool and sitecheck passed file check",
+  "image_version_check": "passed",
+  "build_parallelism": 1,
+  "build_go_memory_limit": "256MiB"
+}
