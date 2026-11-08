@@ -285,6 +285,34 @@ func (s *Store) ListProjectJobs(ctx context.Context, projectID string, limit int
 	return out, mapErr(rows.Err())
 }
 
+// ListStaleRunningJobs returns RUNNING jobs of a kind whose row has not been
+// updated since staleBefore. Live runners persist progress every round, so a
+// silent row has lost its runner (crashed process, failed finalize) even when
+// the service is still up.
+func (s *Store) ListStaleRunningJobs(ctx context.Context, kind string,
+	staleBefore time.Time, limit int) ([]domain.Job, error) {
+	if limit <= 0 {
+		limit = 32
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+jobColumns+` FROM jobs WHERE kind = ? AND state = ? AND updated_at < ?
+		 ORDER BY created_at LIMIT ?`,
+		kind, JobRunning, fmtTime(staleBefore), limit)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var out []domain.Job
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, mapErr(err)
+		}
+		out = append(out, j)
+	}
+	return out, mapErr(rows.Err())
+}
+
 // PrewarmQuery selects one bounded page of custom-source inventory candidates
 // for background validation accounting. Evidence reuse is intentionally not
 // SQL: connection fingerprints are HMAC values the store cannot compute, so

@@ -187,6 +187,24 @@ func main() {
 	background.Add(1)
 	go func() {
 		defer background.Done()
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case <-ticker.C:
+				if n, err := prewarm.ReapStaleJobs(runCtx); err != nil {
+					log.Warn("prewarm stale job sweep failed", "error", err)
+				} else if n > 0 {
+					log.Warn("prewarm stale jobs reaped", "count", n)
+				}
+			}
+		}
+	}()
+	background.Add(1)
+	go func() {
+		defer background.Done()
 		poolMaintenance.Run(runCtx, log)
 	}()
 	go func() {

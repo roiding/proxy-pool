@@ -329,6 +329,50 @@ func (p *PrewarmService) RecoverInterrupted(ctx context.Context) (int64, error) 
 	return p.store.RecoverInterruptedJobs(ctx, "service_restart", p.Now())
 }
 
+// staleRunningGrace is how long a RUNNING row may go without progress before
+// the reaper assumes its runner is gone. Live runners persist progress every
+// round; a probe batch is bounded well below this.
+const staleRunningGrace = 5 * time.Minute
+
+// ReapStaleJobs finalizes RUNNING prewarm rows no live runner is updating. A
+// row left RUNNING blocks every later prewarm for its project until restart,
+// so this sweep is the safety net for failed finalizes and lost runners. Rows
+// still tracked by this process are skipped: their runner owns the row.
+func (p *PrewarmService) ReapStaleJobs(ctx context.Context) (int64, error) {
+	jobs, err := p.store.ListStaleRunningJobs(ctx, PrewarmJobKind,
+		p.Now().Add(-staleRunningGrace), 32)
+	if err != nil {
+		return 0, err
+	}
+	var reaped int64
+	for _, job := range jobs {
+		p.runsMu.Lock()
+		_, live := p.runs[job.ID]
+		p.runsMu.Unlock()
+		if live {
+			continue
+		}
+		state, stop := sqlite.JobPartial, "deadline"
+		if job.Ready >= job.Target && job.Target > 0 {
+			state, stop = sqlite.JobCompleted, "target_met"
+		}
+		finalCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err := p.store.FinishJob(finalCtx, job.ID, state, stop, "reaped stale running row", p.Now())
+		cancel()
+		if err != nil {
+			continue
+		}
+		reaped++
+		p.logReaped(job, state)
+	}
+	return reaped, nil
+}
+
+func (p *PrewarmService) logReaped(job domain.Job, state string) {
+	slog.Warn("prewarm stale row reaped", "job_id", job.ID, "project_id", job.ProjectID,
+		"state", state, "ready", job.Ready, "target", job.Target)
+}
+
 // Shutdown cancels every runner owned by this process and waits, bounded by
 // ctx, for their finalization. New jobs are rejected after shutdown starts.
 func (p *PrewarmService) Shutdown(ctx context.Context) error {
@@ -512,14 +556,11 @@ func (p *PrewarmService) execute(ctx context.Context, jobID, projectID string, p
 	if downloadsDone != nil {
 		<-downloadsDone
 	}
-	// Final persistence must not inherit an expired job/probe deadline. It is
-	// a short bounded write and only settles this already-running row.
-	finalCtx, finalCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-	defer finalCancel()
-	// A cancel is already terminal; final readiness is still useful for a
-	// normal deadline, but a failed final scope query must not overwrite the
-	// cancellation reason.
-	finalScope, sErr := p.currentScope(finalCtx, projectID, params)
+	// The final readiness recheck is best effort: it shares nothing with the
+	// finalize write below and may fail under store contention without
+	// affecting the terminal state.
+	analysisCtx, analysisCancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	finalScope, sErr := p.currentScope(analysisCtx, projectID, params)
 	ready := 0
 	var rerr error
 	if sErr != nil {
@@ -527,9 +568,10 @@ func (p *PrewarmService) execute(ctx context.Context, jobID, projectID string, p
 	} else if finalScope == nil {
 		stop = "project_state_changed"
 	} else {
-		ready, rerr = p.currentReady(finalCtx, projectID, params, *finalScope,
+		ready, rerr = p.currentReady(analysisCtx, projectID, params, *finalScope,
 			finalScope.ScopeHash)
 	}
+	analysisCancel()
 	if rerr != nil && lastErr == "" && stop != sqlite.JobStopCanceled {
 		lastErr = rerr.Error()
 	}
@@ -544,12 +586,15 @@ func (p *PrewarmService) execute(ctx context.Context, jobID, projectID string, p
 	case ready >= params.Count:
 		state = sqlite.JobCompleted
 	}
-	// A cancel that already finalized the row is the expected conflict; any
-	// other FinishJob failure leaves the row active, and the next
-	// RecoverInterruptedJobs pass marks it INTERRUPTED instead of silently
-	// reporting a terminal state the store never recorded.
-	for attempt := 0; attempt < 3; attempt++ {
+	// Finalization is the one write this function must land: a row left
+	// RUNNING blocks every later prewarm for the project until restart. Each
+	// attempt gets a fresh bounded context so an expired analysis budget can
+	// never starve the finalize write itself. A cancel that already finalized
+	// the row is the expected NOT_FOUND conflict.
+	for attempt := 0; attempt < 4; attempt++ {
+		finalCtx, finalCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		err := p.store.FinishJob(finalCtx, jobID, state, stop, lastErr, p.Now())
+		finalCancel()
 		if err == nil {
 			slog.Info("prewarm finished", "job_id", jobID, "project_id", projectID,
 				"state", state, "ready", ready, "target", params.Count,
@@ -560,11 +605,10 @@ func (p *PrewarmService) execute(ctx context.Context, jobID, projectID string, p
 		if errors.As(err, &derr) && derr.Code == "NOT_FOUND" {
 			return
 		}
-		if finalCtx.Err() != nil {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(150 * time.Millisecond)
 	}
+	slog.Error("prewarm finalize failed; row left for the stale reaper", "job_id", jobID,
+		"state", state, "stop_reason", stop)
 }
 
 // currentScope re-reads project enablement and allowlist before every page.
